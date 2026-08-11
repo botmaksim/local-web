@@ -76,6 +76,7 @@ const proxy = createProxyMiddleware({
         if (!newPath.startsWith('/')) newPath = '/' + newPath;
         return newPath;
     },
+    ws: true,
     on: {
         proxyRes: responseInterceptor(async (responseBuffer, proxyRes, req, res) => {
             const targetIp = req.originalUrl.split('/')[1];
@@ -189,10 +190,10 @@ app.use((req, res, next) => {
         }
         return proxy(req, res, next);
     } else {
-        const referer = req.headers.referer;
-        if (referer) {
+        const sourceUrl = req.headers.referer || req.headers.origin;
+        if (sourceUrl) {
             try {
-                const refUrl = new URL(referer);
+                const refUrl = new URL(sourceUrl);
                 const refIp = refUrl.pathname.split('/')[1];
                 if (ipRegex.test(refIp)) {
                     const devices = getDevices();
@@ -211,4 +212,5 @@ app.use((req, res, next) => {
 });
 
 app.use(express.static(path.join(__dirname, 'frontend/dist')));
-app.listen(PORT, () => console.log(`Gateway running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Gateway running on port ${PORT}`));
+server.on('upgrade', proxy.upgrade);
