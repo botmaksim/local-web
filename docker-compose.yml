@@ -2,10 +2,13 @@ services:
   smart-proxy:
     build:
       context: .
-      dockerfile: dockerfile
+      dockerfile: Dockerfile
     container_name: smart-proxy
     ports:
       - "9091:9091"
     volumes:
       - ./data:/app/data
     restart: unless-stopped
+    # Uncomment to allow the container to reach LAN devices directly
+    # (useful if Docker bridge NAT blocks access to 192.168.x.x)
+    # network_mode: host
