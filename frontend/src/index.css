@@ -10,13 +10,18 @@
   --card-border: rgba(255, 255, 255, 0.08);
   --input-bg: rgba(0, 0, 0, 0.2);
   --shadow-color: rgba(0, 0, 0, 0.5);
+  --danger: #ff4757;
+  --warn: #feca57;
 }
+
+/* ── Reset & Base ─────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
 
 body {
   margin: 0;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   background-color: var(--bg-color);
-  background-image: 
+  background-image:
     radial-gradient(circle at 15% 50%, rgba(170, 59, 255, 0.15), transparent 25%),
     radial-gradient(circle at 85% 30%, rgba(59, 130, 246, 0.15), transparent 25%);
   background-attachment: fixed;
@@ -31,17 +36,17 @@ body {
 #root {
   width: 100%;
   max-width: 1200px;
-  padding: 0 2rem;
-  box-sizing: border-box;
+  padding: 0 2rem 4rem;
 }
 
+/* ── Dashboard ────────────────────────────────────────────── */
 .dashboard {
   display: flex;
   flex-direction: column;
   gap: 2.5rem;
-  width: 100%;
 }
 
+/* ── Header ───────────────────────────────────────────────── */
 header {
   text-align: center;
   animation: fadeInDown 0.8s ease-out;
@@ -53,6 +58,7 @@ header h1 {
   background: linear-gradient(135deg, #fff, #a5b4fc);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
+  background-clip: text;
   margin: 0;
   letter-spacing: -0.02em;
 }
@@ -63,6 +69,34 @@ header p {
   font-size: 1.1rem;
 }
 
+/* ── Error Banner ─────────────────────────────────────────── */
+.error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  background: rgba(255, 71, 87, 0.1);
+  border: 1px solid rgba(255, 71, 87, 0.35);
+  color: #ff6b78;
+  padding: 0.9rem 1.2rem;
+  border-radius: 10px;
+  font-size: 0.95rem;
+  animation: fadeIn 0.3s ease;
+}
+
+.error-close {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  opacity: 0.7;
+  padding: 0;
+}
+.error-close:hover { opacity: 1; }
+
+/* ── Add Form ─────────────────────────────────────────────── */
 .add-form {
   display: flex;
   gap: 1rem;
@@ -78,9 +112,30 @@ header p {
   animation: fadeIn 1s ease-out;
 }
 
+.ip-row {
+  display: flex;
+  gap: 0.5rem;
+  flex: 2;
+  min-width: 280px;
+}
+
+.protocol-select {
+  background: var(--input-bg);
+  border: 1px solid var(--card-border);
+  color: var(--text-secondary);
+  padding: 0.8rem 0.6rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.3s;
+  flex-shrink: 0;
+}
+.protocol-select:focus { border-color: var(--accent); }
+
 .add-form input {
   flex: 1;
-  min-width: 250px;
+  min-width: 200px;
   background: var(--input-bg);
   border: 1px solid var(--card-border);
   color: var(--text-primary);
@@ -96,9 +151,10 @@ header p {
   box-shadow: 0 0 0 2px rgba(170, 59, 255, 0.2);
 }
 
-.add-form input::placeholder {
-  color: #64748b;
-}
+.add-form input::placeholder { color: #64748b; }
+
+.add-form input:disabled,
+.protocol-select:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .btn-add {
   background: var(--accent);
@@ -107,25 +163,47 @@ header p {
   padding: 0.8rem 1.5rem;
   border-radius: 8px;
   font-weight: 600;
+  font-size: 1rem;
   cursor: pointer;
   transition: background 0.3s, transform 0.2s;
+  min-width: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.btn-add:hover:not(:disabled) { background: var(--accent-hover); transform: translateY(-2px); }
+.btn-add:active:not(:disabled) { transform: translateY(0); }
+.btn-add:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* ── Loading ──────────────────────────────────────────────── */
+.loading-wrapper {
+  display: flex;
+  justify-content: center;
+  padding: 4rem;
 }
 
-.btn-add:hover {
-  background: var(--accent-hover);
-  transform: translateY(-2px);
+/* ── Spinner ──────────────────────────────────────────────── */
+.spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
 }
+.spinner.large { width: 40px; height: 40px; border-width: 3px; border-top-color: var(--accent); }
 
-.btn-add:active {
-  transform: translateY(0);
-}
+@keyframes spin { to { transform: rotate(360deg); } }
 
+/* ── Device Grid ──────────────────────────────────────────── */
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 1.5rem;
 }
 
+/* ── Card ─────────────────────────────────────────────────── */
 .card {
   background: var(--card-bg);
   border: 1px solid var(--card-border);
@@ -152,11 +230,32 @@ header p {
   box-shadow: 0 12px 40px rgba(170, 59, 255, 0.15);
 }
 
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
 .card h3 {
   margin: 0;
   font-size: 1.3rem;
   font-weight: 600;
 }
+
+/* ── Protocol Badge ───────────────────────────────────────── */
+.badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  font-family: 'Fira Code', monospace;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+.badge-http  { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59,130,246,0.3); }
+.badge-https { background: rgba(52, 211, 153, 0.15); color: #34d399; border: 1px solid rgba(52,211,153,0.3); }
 
 .ip-text {
   color: var(--text-secondary);
@@ -170,13 +269,14 @@ header p {
   align-self: flex-start;
 }
 
+/* ── Card Actions ─────────────────────────────────────────── */
 .card-actions {
   display: flex;
   gap: 0.8rem;
   margin-top: auto;
 }
 
-.btn-open, .btn-del {
+.btn-open, .btn-del, .btn-edit {
   flex: 1;
   text-align: center;
   padding: 0.6rem;
@@ -185,68 +285,55 @@ header p {
   font-weight: 500;
   text-decoration: none;
   cursor: pointer;
-  transition: background 0.3s, color 0.3s, border-color 0.3s;
-  border: none;
+  transition: background 0.25s, color 0.25s, border-color 0.25s, transform 0.15s;
+  border: 1px solid transparent;
 }
 
 .btn-open {
   background: rgba(255, 255, 255, 0.05);
   color: var(--text-primary);
-  border: 1px solid var(--card-border);
+  border-color: var(--card-border);
 }
-
 .btn-open:hover {
-  background-color: var(--accent);
-  color: var(--bg-color);
+  background: var(--accent);
   border-color: var(--accent);
+  transform: translateY(-1px);
 }
 
 .btn-del {
-  border-color: #ff4757;
-  color: #ff4757;
   background: transparent;
+  color: var(--danger);
+  border-color: var(--danger);
 }
-
-.btn-del:hover {
-  background-color: #ff4757;
-  color: #fff;
-}
+.btn-del:hover { background: var(--danger); color: #fff; transform: translateY(-1px); }
 
 .btn-edit {
-  border-color: #feca57;
-  color: #feca57;
   background: transparent;
-  flex: 1;
-  text-align: center;
-  padding: 0.6rem;
-  border-radius: 8px;
-  font-size: 0.95rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.3s, color 0.3s, border-color 0.3s;
-  border: 1px solid #feca57;
+  color: var(--warn);
+  border-color: var(--warn);
 }
+.btn-edit:hover { background: var(--warn); color: #1a1a1a; transform: translateY(-1px); }
 
-.btn-edit:hover {
-  background-color: #feca57;
-  color: #fff;
-}
+/* ── Edit Mode ────────────────────────────────────────────── */
+.card.edit-mode { border-color: rgba(170, 59, 255, 0.4); }
 
 .edit-input {
   width: 100%;
-  margin-bottom: 0.5rem;
   background: rgba(0, 0, 0, 0.2);
   border: 1px solid rgba(255, 255, 255, 0.1);
   color: var(--text-primary);
-  padding: 0.5rem;
+  padding: 0.55rem 0.8rem;
   border-radius: 6px;
-}
-
-.edit-input:focus {
+  font-size: 0.95rem;
   outline: none;
-  border-color: var(--accent);
+  transition: border-color 0.25s;
 }
+.edit-input:focus { border-color: var(--accent); }
 
+.card.edit-mode .ip-row { margin-bottom: 0.2rem; }
+.card.edit-mode .ip-row .edit-input { min-width: 0; }
+
+/* ── Empty State ──────────────────────────────────────────── */
 .empty {
   grid-column: 1 / -1;
   text-align: center;
@@ -258,17 +345,16 @@ header p {
   backdrop-filter: blur(12px);
 }
 
+/* ── Animations ───────────────────────────────────────────── */
 @keyframes fadeInDown {
   from { opacity: 0; transform: translateY(-20px); }
-  to { opacity: 1; transform: translateY(0); }
+  to   { opacity: 1; transform: translateY(0); }
 }
-
 @keyframes fadeIn {
   from { opacity: 0; }
-  to { opacity: 1; }
+  to   { opacity: 1; }
 }
-
 @keyframes fadeInUp {
   from { opacity: 0; transform: translateY(20px); }
-  to { opacity: 1; transform: translateY(0); }
+  to   { opacity: 1; transform: translateY(0); }
 }

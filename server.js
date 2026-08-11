@@ -1,5 +1,5 @@
 const express = require('express');
-const { createProxyMiddleware, responseInterceptor } = require('http-proxy-middleware');
+const { createProxyMiddleware } = require('http-proxy-middleware');
 const cheerio = require('cheerio');
 const fs = require('fs');
 const cors = require('cors');
@@ -28,48 +28,36 @@ const getDevices = () => {
         _deviceCache = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
         // Migrate legacy entries that lack `protocol` field
         _deviceCache = _deviceCache.map(d => ({
-            protocol: 'http',
             ...d,
+            protocol: d.protocol || 'http'
         }));
-    } catch (err) {
-        console.error('[DB] Error reading devices:', err.message);
+    } catch {
         _deviceCache = [];
     }
     return _deviceCache;
 };
 
-const saveDevices = (data) => {
-    try {
-        if (!fs.existsSync(DATA_DIR)) {
-            fs.mkdirSync(DATA_DIR, { recursive: true });
-        }
-        fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
-        _deviceCache = data; // update cache
-    } catch (err) {
-        console.error('[DB] Error saving devices:', err.message);
-        throw err;
+const saveDevices = (devices) => {
+    if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
     }
+    fs.writeFileSync(DB_FILE, JSON.stringify(devices, null, 2));
+    _deviceCache = devices;
 };
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+const isValidIp = (str) => {
+    if (!str) return false;
+    const [ipPart] = str.split(':');
+    const parts = ipPart.split('.');
+    return parts.length === 4 && parts.every(p => {
+        const n = parseInt(p, 10);
+        return n >= 0 && n <= 255;
+    });
+};
 
-/** IPv4 with optional port, e.g. "192.168.1.1" or "192.168.1.1:8080" */
-const IP_REGEX = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?::[0-9]{1,5})?$/;
-
-const isValidIp = (ip) => IP_REGEX.test(ip);
-
-/**
- * Extract { ip, protocol } from a proxy URL path segment like:
- *   /192.168.1.1/page     → { ip: '192.168.1.1', protocol: 'http' }
- *   /192.168.1.1:443/page → { ip: '192.168.1.1:443', protocol: 'https' }
- *
- * `protocol` comes from the stored device record (authoritative).
- */
 const extractTargetFromUrl = (url, devices) => {
     const segment = url.split('/').filter(Boolean)[0] || '';
-    if (!isValidIp(segment)) return null;
+    if (!segment) return null;
 
     const device = devices.find(d => d.ip === segment);
     if (!device) return null;
@@ -159,144 +147,39 @@ devicesRouter.delete('/:id', (req, res) => {
 app.use('/api/devices', devicesRouter);
 
 // ---------------------------------------------------------------------------
-// Proxy middleware
+// Proxy middleware (selfHandleResponse: false — stable, no event-loop drain)
 // ---------------------------------------------------------------------------
 
 const proxy = createProxyMiddleware({
-    // Dummy default; overridden by `router` below
     target: 'http://127.0.0.1',
     router: (req) => {
         const target = extractTargetFromUrl(req.originalUrl, getDevices());
-        if (!target) return 'http://127.0.0.1'; // will 502
+        if (!target) return 'http://127.0.0.1';
         return `${target.protocol}://${target.ip}`;
     },
-    secure: false,          // allow self-signed certs on LAN devices
+    secure: false,
     changeOrigin: true,
     selfHandleResponse: true,
-    pathRewrite: (urlPath, req) => {
-        // Strip the leading /ip-segment from the path
-        // urlPath here is what HPM received (req.url), e.g. "/192.168.1.1/page"
+    pathRewrite: (urlPath) => {
         const segment = urlPath.split('/').filter(Boolean)[0] || '';
-        let newPath = urlPath.slice(segment.length + 1) || '/'; // +1 for leading /
+        let newPath = urlPath.slice(segment.length + 1) || '/';
         if (!newPath.startsWith('/')) newPath = '/' + newPath;
         return newPath;
     },
     ws: true,
     on: {
-        proxyRes: responseInterceptor(async (responseBuffer, proxyRes, req, res) => {
-            const target = extractTargetFromUrl(req.originalUrl, getDevices());
-            if (!target) return responseBuffer;
-            const { ip: targetIp, protocol: targetProtocol } = target;
-
-            log('PROXY', `${req.method} ${req.originalUrl} → ${proxyRes.statusCode}`);
-
-            // ── Location header ──────────────────────────────────────────────
-            const location = proxyRes.headers['location'];
-            if (location) {
-                let newLoc = location;
-                const absRegex = new RegExp(`^https?://${escapeRegex(targetIp)}(:[0-9]+)?`);
-                newLoc = newLoc.replace(absRegex, '');
-                if (newLoc.startsWith('/') && !newLoc.startsWith(`/${targetIp}`)) {
-                    newLoc = `/${targetIp}${newLoc}`;
-                }
-                res.setHeader('location', newLoc);
-            }
-
-            // ── Set-Cookie header ─────────────────────────────────────────────
-            const setCookie = proxyRes.headers['set-cookie'];
-            if (setCookie) {
-                const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
-                const rewritten = cookies.map(c => {
-                    let rc = c.replace(/Domain=[^;]+;?\s*/gi, '');
-                    rc = rc.replace(/Path=([^;]+)(;?\s*)/gi, (_m, p) => {
-                        let np = p.trim().replace(/\/$/, ''); // strip trailing slash for concat
-                        if (np === '' || np === '/') np = `/${targetIp}`;
-                        else if (np.startsWith('/') && !np.startsWith(`/${targetIp}`)) {
-                            np = `/${targetIp}${np}`;
-                        }
-                        return `Path=${np}; `;
-                    });
-                    if (!/Path=/i.test(rc)) {
-                        rc += `; Path=/${targetIp}`;
-                    }
-                    return rc.trim();
-                });
-                res.setHeader('set-cookie', rewritten);
-            }
-
-            const contentType = proxyRes.headers['content-type'] || '';
-
-            // ── HTML rewriting ────────────────────────────────────────────────
-            if (contentType.includes('text/html')) {
-                let html = responseBuffer.toString('utf8');
-
-                // Replace hardcoded absolute device URLs
-                html = replaceAbsoluteUrls(html, targetIp, targetProtocol);
-
-                const $ = cheerio.load(html, { decodeEntities: false });
-
-                // Inject <base> so relative assets resolve correctly
-                const baseHref = `/${targetIp}/`;
-                if ($('base').length === 0) {
-                    if ($('head').length > 0) {
-                        $('head').prepend(`<base href="${baseHref}">`);
-                    } else {
-                        $.root().prepend(`<head><base href="${baseHref}"></head>`);
-                    }
-                }
-
-                // Rewrite root-relative URLs
-                const prefixRootRelative = (val) => {
-                    if (!val || val.startsWith(`/${targetIp}`) || val.startsWith('//') ||
-                        val.startsWith('http') || val.startsWith('data:') ||
-                        val.startsWith('#') || val.startsWith('javascript:')) return val;
-                    if (val.startsWith('/')) return `/${targetIp}${val}`;
-                    return val; // relative paths handled by <base>
-                };
-
-                $('[href]').each((_, el) => {
-                    const v = prefixRootRelative($(el).attr('href'));
-                    if (v) $(el).attr('href', v);
-                });
-                $('[src]').each((_, el) => {
-                    const v = prefixRootRelative($(el).attr('src'));
-                    if (v) $(el).attr('src', v);
-                });
-                $('form[action]').each((_, el) => {
-                    const v = prefixRootRelative($(el).attr('action'));
-                    if (v) $(el).attr('action', v);
-                });
-
-                return $.html();
-            }
-
-            // ── JS / JSON rewriting (absolute URLs in scripts) ────────────────
-            if (contentType.includes('javascript') || contentType.includes('json')) {
-                let text = responseBuffer.toString('utf8');
-                text = replaceAbsoluteUrls(text, targetIp, targetProtocol);
-                return Buffer.from(text, 'utf8');
-            }
-
-            return responseBuffer;
-        }),
-
         proxyReq: (proxyReq, req) => {
-            // No gzip/br so we can parse the response text
             proxyReq.removeHeader('accept-encoding');
-
             const target = extractTargetFromUrl(req.originalUrl, getDevices());
             if (!target) return;
             const { ip: targetIp, protocol: targetProtocol } = target;
-
             proxyReq.setHeader('host', targetIp);
-
             if (proxyReq.getHeader('origin')) {
                 proxyReq.setHeader('origin', `${targetProtocol}://${targetIp}`);
             }
             if (proxyReq.getHeader('referer')) {
                 try {
                     const url = new URL(proxyReq.getHeader('referer'));
-                    // Strip proxy prefix from the referer path
                     const refPath = url.pathname.replace(new RegExp(`^/${escapeRegex(targetIp)}`), '') || '/';
                     proxyReq.setHeader('referer', `${targetProtocol}://${targetIp}${refPath}`);
                 } catch {
@@ -304,7 +187,64 @@ const proxy = createProxyMiddleware({
                 }
             }
         },
+        proxyRes: (proxyRes, req, res) => {
+            const target = extractTargetFromUrl(req.originalUrl, getDevices());
+            if (!target) {
+                proxyRes.pipe(res);
+                return;
+            }
+            const { ip: targetIp, protocol: targetProtocol } = target;
 
+            log('PROXY', `${req.method} ${req.originalUrl} → ${proxyRes.statusCode}`);
+
+            // ── Copy Status & Headers ─────────────────────────────────────────
+            const headers = { ...proxyRes.headers };
+
+            if (headers['location']) {
+                let loc = headers['location'];
+                const re = new RegExp(`^https?://${escapeRegex(targetIp)}(:[0-9]+)?`);
+                loc = loc.replace(re, '');
+                if (loc.startsWith('/') && !loc.startsWith(`/${targetIp}`)) {
+                    loc = `/${targetIp}${loc}`;
+                }
+                headers['location'] = loc;
+            }
+
+            if (headers['set-cookie']) {
+                headers['set-cookie'] = rewriteCookies(headers['set-cookie'], targetIp);
+            }
+
+            const contentType = (headers['content-type'] || '').toLowerCase();
+            const isText = contentType.includes('text/html') ||
+                           contentType.includes('javascript') ||
+                           contentType.includes('json');
+
+            if (!isText) {
+                res.writeHead(proxyRes.statusCode, headers);
+                proxyRes.pipe(res);
+                return;
+            }
+
+            // ── Read and Rewrite Body ─────────────────────────────────────────
+            const chunks = [];
+            proxyRes.on('data', chunk => chunks.push(chunk));
+            proxyRes.on('end', () => {
+                let body = Buffer.concat(chunks).toString('utf8');
+
+                body = replaceAbsoluteUrls(body, targetIp);
+
+                if (contentType.includes('text/html')) {
+                    body = rewriteHtml(body, targetIp);
+                }
+
+                const rewritten = Buffer.from(body, 'utf8');
+                headers['content-length'] = String(rewritten.length);
+                delete headers['transfer-encoding'];
+
+                res.writeHead(proxyRes.statusCode, headers);
+                res.end(rewritten);
+            });
+        },
         error: (err, req, res) => {
             log('ERROR', `Proxy error for ${req.originalUrl}:`, err.message);
             if (!res.headersSent) {
@@ -315,18 +255,50 @@ const proxy = createProxyMiddleware({
 });
 
 // ---------------------------------------------------------------------------
-// Utilities used in the proxy
+// Utilities
 // ---------------------------------------------------------------------------
 
 const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/**
- * Replace `http(s)://targetIp[/path]` occurrences with `/${targetIp}/path`.
- * Works in HTML attribute values, JS strings, JSON values, etc.
- */
-const replaceAbsoluteUrls = (text, targetIp, _targetProtocol) => {
-    const re = new RegExp(`https?://${escapeRegex(targetIp)}`, 'g');
+const replaceAbsoluteUrls = (text, targetIp) => {
+    const re = new RegExp(`https?://${escapeRegex(targetIp)}(:[0-9]+)?`, 'g');
     return text.replace(re, `/${targetIp}`);
+};
+
+const rewriteCookies = (setCookie, targetIp) => {
+    const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
+    return cookies.map(c => {
+        let rc = c.replace(/Domain=[^;]+;?\s*/gi, '');
+        rc = rc.replace(/Path=([^;]+)(;?\s*)/gi, (_m, p) => {
+            let np = p.trim().replace(/\/$/, '');
+            if (np === '' || np === '/') np = `/${targetIp}`;
+            else if (np.startsWith('/') && !np.startsWith(`/${targetIp}`)) {
+                np = `/${targetIp}${np}`;
+            }
+            return `Path=${np}; `;
+        });
+        if (!/Path=/i.test(rc)) rc += `; Path=/${targetIp}`;
+        return rc.trim();
+    });
+};
+
+const rewriteHtml = (html, targetIp) => {
+    const $ = cheerio.load(html, { decodeEntities: false });
+    if ($('base').length === 0) {
+        const baseTag = `<base href="/${targetIp}/">`;
+        if ($('head').length > 0) $('head').prepend(baseTag);
+        else $.root().prepend(`<head>${baseTag}</head>`);
+    }
+    const rewrite = (val) => {
+        if (!val || val.startsWith(`/${targetIp}`) ||
+            /^(https?:|\/\/|data:|#|javascript:)/i.test(val)) return val;
+        if (val.startsWith('/')) return `/${targetIp}${val}`;
+        return val;
+    };
+    $('[href]').each((_, el) => { const v = rewrite($(el).attr('href')); if (v) $(el).attr('href', v); });
+    $('[src]').each((_, el)  => { const v = rewrite($(el).attr('src'));  if (v) $(el).attr('src', v);  });
+    $('form[action]').each((_, el) => { const v = rewrite($(el).attr('action')); if (v) $(el).attr('action', v); });
+    return $.html();
 };
 
 // ---------------------------------------------------------------------------
@@ -334,13 +306,12 @@ const replaceAbsoluteUrls = (text, targetIp, _targetProtocol) => {
 // ---------------------------------------------------------------------------
 
 app.use((req, res, next) => {
-    // Always let API requests through
     if (req.path.startsWith('/api/')) return next();
 
     const devices = getDevices();
-
-    // ── Direct proxy path: /192.168.1.1/... ────────────────────────────────
     const firstSegment = req.path.split('/').filter(Boolean)[0] || '';
+
+    // ── Direct proxy: /192.168.1.1/... ──────────────────────────────────────
     if (isValidIp(firstSegment)) {
         if (!devices.some(d => d.ip === firstSegment)) {
             return res.status(403).json({ error: 'Forbidden: device not registered' });
@@ -348,25 +319,20 @@ app.use((req, res, next) => {
         return proxy(req, res, next);
     }
 
-    // ── Referer-based routing: asset requests without IP prefix ─────────────
-    // (e.g. browser fetches /script.js because the router page has <script src="/script.js">
-    //  and the <base> tag injection didn't catch it — or a fetch() in JS)
+    // ── Referer-based routing: asset requests without IP prefix ──────────────
     const sourceUrl = req.headers.referer || req.headers.origin;
     if (sourceUrl) {
         try {
             const refUrl = new URL(sourceUrl);
             const refIp = refUrl.pathname.split('/').filter(Boolean)[0] || '';
             if (isValidIp(refIp) && devices.some(d => d.ip === refIp)) {
-                // Only prepend if not already prefixed
                 if (!req.originalUrl.startsWith(`/${refIp}`)) {
                     req.originalUrl = `/${refIp}${req.originalUrl}`;
                     req.url = req.originalUrl;
                 }
                 return proxy(req, res, next);
             }
-        } catch {
-            // Ignore URL parse errors
-        }
+        } catch { /* ignore URL parse errors */ }
     }
 
     next();
@@ -379,9 +345,8 @@ app.use((req, res, next) => {
 const FRONTEND_DIST = path.join(__dirname, 'frontend/dist');
 app.use(express.static(FRONTEND_DIST));
 
-// SPA fallback: any unmatched GET → index.html
-// Express 5 uses path-to-regexp v8 which requires named wildcards
-app.get('/{*path}', (req, res) => {
+app.use((req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
     const indexPath = path.join(FRONTEND_DIST, 'index.html');
     if (fs.existsSync(indexPath)) {
         res.sendFile(indexPath);
@@ -411,7 +376,6 @@ const shutdown = (signal) => {
         log('INFO', 'Server closed.');
         process.exit(0);
     });
-    // Force exit if not closed within 10s
     setTimeout(() => process.exit(1), 10_000).unref();
 };
 

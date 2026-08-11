@@ -1,10 +1,13 @@
 {
   "name": "smart-proxy",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Smart reverse proxy gateway for home LAN devices",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node test/run_tests.js",
+    "test:spawn": "node test/run_tests.js --spawn"
   },
   "keywords": [],
   "author": "",
