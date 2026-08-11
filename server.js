@@ -234,7 +234,7 @@ const proxy = createProxyMiddleware({
                 body = replaceAbsoluteUrls(body, targetIp);
 
                 if (contentType.includes('text/html')) {
-                    body = rewriteHtml(body, targetIp);
+                    body = rewriteHtml(body, targetIp, req.originalUrl);
                 }
 
                 const rewritten = Buffer.from(body, 'utf8');
@@ -282,10 +282,18 @@ const rewriteCookies = (setCookie, targetIp) => {
     });
 };
 
-const rewriteHtml = (html, targetIp) => {
+const rewriteHtml = (html, targetIp, originalUrl = '') => {
     const $ = cheerio.load(html, { decodeEntities: false });
+    
+    // Compute dynamic base path from the current request URL
+    const urlPath = originalUrl.split('?')[0];
+    let basePath = `/${targetIp}/`;
+    if (urlPath.startsWith(`/${targetIp}/`)) {
+        basePath = urlPath.substring(0, urlPath.lastIndexOf('/') + 1);
+    }
+    
     if ($('base').length === 0) {
-        const baseTag = `<base href="/${targetIp}/">`;
+        const baseTag = `<base href="${basePath}">`;
         if ($('head').length > 0) $('head').prepend(baseTag);
         else $.root().prepend(`<head>${baseTag}</head>`);
     }
