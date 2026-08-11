@@ -1,5 +1,5 @@
 # Stage 1: Build the React application
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm install
@@ -7,7 +7,7 @@ COPY frontend/ .
 RUN npm run build
 
 # Stage 2: Setup the production Node.js server
-FROM node:20-alpine
+FROM node:22-alpine
 WORKDIR /app
 COPY package*.json ./
 RUN npm install --production
