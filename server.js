@@ -213,4 +213,3 @@ app.use((req, res, next) => {
 
 app.use(express.static(path.join(__dirname, 'frontend/dist')));
 const server = app.listen(PORT, () => console.log(`Gateway running on port ${PORT}`));
-server.on('upgrade', proxy.upgrade);
