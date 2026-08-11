@@ -1,0 +1,11 @@
+services:
+  smart-proxy:
+    build:
+      context: .
+      dockerfile: dockerfile
+    container_name: smart-proxy
+    ports:
+      - "9091:9091"
+    volumes:
+      - ./devices.json:/app/devices.json
+    restart: unless-stopped

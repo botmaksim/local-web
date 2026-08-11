@@ -1,0 +1,124 @@
+:root {
+  --bg: #0f172a;
+  --card-bg: #1e293b;
+  --text: #f8fafc;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --danger: #ef4444;
+  --danger-hover: #dc2626;
+}
+
+body {
+  margin: 0;
+  font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background-color: var(--bg);
+  color: var(--text);
+}
+
+.dashboard {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 2rem;
+}
+
+header h1 {
+  text-align: center;
+  font-weight: 600;
+  margin-bottom: 2rem;
+}
+
+.add-form {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 3rem;
+  background: var(--card-bg);
+  padding: 1.5rem;
+  border-radius: 12px;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+}
+
+.add-form input {
+  flex: 1;
+  padding: 10px 15px;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 1rem;
+}
+
+button,
+.btn-open {
+  border: none;
+  border-radius: 8px;
+  padding: 10px 20px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: 0.2s;
+  text-decoration: none;
+  display: inline-block;
+  text-align: center;
+}
+
+.btn-add {
+  background: var(--accent);
+  color: white;
+}
+
+.btn-add:hover {
+  background: var(--accent-hover);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 20px;
+}
+
+.card {
+  background: var(--card-bg);
+  padding: 1.5rem;
+  border-radius: 12px;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+}
+
+.card h3 {
+  margin: 0 0 5px 0;
+  font-size: 1.25rem;
+}
+
+.ip-text {
+  margin: 0 0 20px 0;
+  color: #94a3b8;
+  font-family: monospace;
+}
+
+.card-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.btn-open {
+  background: var(--accent);
+  color: white;
+  flex: 1;
+}
+
+.btn-open:hover {
+  background: var(--accent-hover);
+}
+
+.btn-del {
+  background: var(--danger);
+  color: white;
+}
+
+.btn-del:hover {
+  background: var(--danger-hover);
+}
+
+.empty {
+  grid-column: 1 / -1;
+  text-align: center;
+  color: #94a3b8;
+}
