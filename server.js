@@ -7,17 +7,28 @@ const path = require('path');
 
 const app = express();
 const PORT = 9091;
-const DB_FILE = path.join(__dirname, 'devices.json');
+const DATA_DIR = path.join(__dirname, 'data');
+const DB_FILE = path.join(DATA_DIR, 'devices.json');
 
 app.use(express.json());
 app.use(cors());
 
 const getDevices = () => {
     if (!fs.existsSync(DB_FILE)) return [];
-    return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+    try {
+        return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+    } catch (err) {
+        console.error('Error reading DB:', err);
+        return [];
+    }
 };
 
-const saveDevices = (data) => fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+const saveDevices = (data) => {
+    if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+};
 
 app.get('/api/devices', (req, res) => res.json(getDevices()));
 

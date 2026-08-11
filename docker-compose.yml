@@ -7,5 +7,5 @@ services:
     ports:
       - "9091:9091"
     volumes:
-      - ./devices.json:/app/devices.json
+      - ./data:/app/data
     restart: unless-stopped
