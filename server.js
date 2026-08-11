@@ -155,6 +155,7 @@ const proxy = createProxyMiddleware({
         proxyReq: (proxyReq, req, res) => {
             proxyReq.removeHeader('accept-encoding');
             const targetIp = req.originalUrl.split('/')[1];
+            proxyReq.setHeader('host', targetIp);
             if (proxyReq.getHeader('origin')) {
                 proxyReq.setHeader('origin', `http://${targetIp}`);
             }
