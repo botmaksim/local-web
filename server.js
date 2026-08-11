@@ -94,6 +94,26 @@ const proxy = createProxyMiddleware({
                 res.setHeader('location', newLoc);
             }
 
+            // Rewrite Set-Cookie header to fix domain and path mismatches
+            const setCookie = res.getHeader('set-cookie') || proxyRes.headers['set-cookie'];
+            if (setCookie) {
+                const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
+                const rewrittenCookies = cookies.map(c => {
+                    let rewritten = c.replace(/Domain=[^;]+;?\s*/gi, '');
+                    rewritten = rewritten.replace(/Path=([^;]+);?\s*/gi, (match, p) => {
+                        let newPath = p;
+                        if (newPath === '/') newPath = `/${targetIp}/`;
+                        else if (newPath.startsWith('/')) newPath = `/${targetIp}${newPath}`;
+                        return `Path=${newPath}; `;
+                    });
+                    if (!rewritten.match(/Path=/i)) {
+                        rewritten += `; Path=/${targetIp}/`;
+                    }
+                    return rewritten;
+                });
+                res.setHeader('set-cookie', rewrittenCookies);
+            }
+
             const contentType = proxyRes.headers['content-type'];
             if (contentType && contentType.includes('text/html')) {
                 let html = responseBuffer.toString('utf8');
@@ -134,6 +154,20 @@ const proxy = createProxyMiddleware({
         }),
         proxyReq: (proxyReq, req, res) => {
             proxyReq.removeHeader('accept-encoding');
+            const targetIp = req.originalUrl.split('/')[1];
+            if (proxyReq.getHeader('origin')) {
+                proxyReq.setHeader('origin', `http://${targetIp}`);
+            }
+            if (proxyReq.getHeader('referer')) {
+                const oldReferer = proxyReq.getHeader('referer');
+                try {
+                    const url = new URL(oldReferer);
+                    const refPath = url.pathname.replace(`/${targetIp}`, '') || '/';
+                    proxyReq.setHeader('referer', `http://${targetIp}${refPath}`);
+                } catch (e) {
+                    proxyReq.setHeader('referer', `http://${targetIp}/`);
+                }
+            }
         },
         error: (err, req, res) => {
             res.status(502).send('Bad Gateway');
