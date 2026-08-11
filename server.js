@@ -262,7 +262,12 @@ const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const replaceAbsoluteUrls = (text, targetIp) => {
     const re = new RegExp(`https?://${escapeRegex(targetIp)}(:[0-9]+)?`, 'g');
-    return text.replace(re, `/${targetIp}`);
+    let replaced = text.replace(re, `/${targetIp}`);
+    
+    // Also rewrite common JS redirects that point exactly to root "/"
+    replaced = replaced.replace(/(location\.href|location\.replace|location\.assign|window\.location|top\.location\.href)\s*(=|\()\s*(['"])\/(['"])/g, `$1$2$3/${targetIp}/$4`);
+    
+    return replaced;
 };
 
 const rewriteCookies = (setCookie, targetIp) => {
@@ -306,6 +311,19 @@ const rewriteHtml = (html, targetIp, originalUrl = '') => {
     $('[href]').each((_, el) => { const v = rewrite($(el).attr('href')); if (v) $(el).attr('href', v); });
     $('[src]').each((_, el)  => { const v = rewrite($(el).attr('src'));  if (v) $(el).attr('src', v);  });
     $('form[action]').each((_, el) => { const v = rewrite($(el).attr('action')); if (v) $(el).attr('action', v); });
+    
+    // Rewrite meta refresh tags
+    $('meta[http-equiv="refresh" i]').each((_, el) => {
+        let content = $(el).attr('content');
+        if (content) {
+            content = content.replace(/(url\s*=\s*)(['"]?)\/([^/']*)(['"]?)/i, (match, p1, p2, p3, p4) => {
+                if (!p3) return `${p1}${p2}/${targetIp}/${p4}`; // it was just "/"
+                return `${p1}${p2}/${targetIp}/${p3}${p4}`;
+            });
+            $(el).attr('content', content);
+        }
+    });
+    
     return $.html();
 };
 
