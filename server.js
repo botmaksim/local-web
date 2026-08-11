@@ -78,11 +78,31 @@ const proxy = createProxyMiddleware({
     },
     on: {
         proxyRes: responseInterceptor(async (responseBuffer, proxyRes, req, res) => {
+            const targetIp = req.originalUrl.split('/')[1];
+            
+            // Rewrite Location header if present
+            const location = res.getHeader('location') || proxyRes.headers['location'];
+            if (location) {
+                let newLoc = location;
+                const ipRegex = new RegExp(`^https?://${targetIp}(:[0-9]+)?`);
+                if (ipRegex.test(newLoc)) {
+                    newLoc = newLoc.replace(ipRegex, '');
+                }
+                if (newLoc.startsWith('/')) {
+                    newLoc = `/${targetIp}${newLoc}`;
+                }
+                res.setHeader('location', newLoc);
+            }
+
             const contentType = proxyRes.headers['content-type'];
             if (contentType && contentType.includes('text/html')) {
-                const html = responseBuffer.toString('utf8');
+                let html = responseBuffer.toString('utf8');
+                
+                // Replace hardcoded absolute IPs in scripts or HTML
+                const absoluteIpRegex = new RegExp(`https?://${targetIp}(:[0-9]+)?`, 'g');
+                html = html.replace(absoluteIpRegex, `/${targetIp}`);
+                
                 const $ = cheerio.load(html);
-                const targetIp = req.originalUrl.split('/')[1];
                 
                 if ($('head').length > 0) {
                     $('head').prepend(`<base href="/${targetIp}/">`);
