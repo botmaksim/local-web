@@ -2,7 +2,6 @@
 node_modules/
 npm-debug.log
 yarn-error.log
-package-lock.json
 
 # Web Gateway Data
 data/
@@ -11,7 +10,6 @@ devices.json
 # Frontend build
 frontend/dist/
 frontend/node_modules/
-frontend/package-lock.json
 
 # Logs
 logs
