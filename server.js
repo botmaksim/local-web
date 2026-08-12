@@ -265,7 +265,7 @@ const replaceAbsoluteUrls = (text, targetIp) => {
     let replaced = text.replace(re, `/${targetIp}`);
     
     // Also rewrite common JS redirects that point exactly to root "/"
-    replaced = replaced.replace(/(location\.href|location\.replace|location\.assign|window\.location|top\.location\.href)\s*(=|\()\s*(['"])\/(['"])/g, `$1$2$3/${targetIp}/$4`);
+    replaced = replaced.replace(/(location\.href|location\.replace|location\.assign|window\.location|top\.location\.href|top\.location|parent\.location|window\.top\.location)\s*(=|\()\s*(['"])\/(['"])/g, `$1$2$3/${targetIp}/$4`);
     
     return replaced;
 };
@@ -352,6 +352,16 @@ app.use((req, res, next) => {
             const refUrl = new URL(sourceUrl);
             const refIp = refUrl.pathname.split('/').filter(Boolean)[0] || '';
             if (isValidIp(refIp) && devices.some(d => d.ip === refIp)) {
+                
+                // If a script dynamically redirects the browser to the root (e.g. window.location = "/"),
+                // it's a top-level HTML navigation. We intercept it and issue a 302 redirect back to the device.
+                if (req.path === '/' && req.method === 'GET') {
+                    const accept = req.headers.accept || '';
+                    if (accept.includes('text/html')) {
+                        return res.redirect(`/${refIp}/`);
+                    }
+                }
+
                 if (!req.originalUrl.startsWith(`/${refIp}`)) {
                     req.originalUrl = `/${refIp}${req.originalUrl}`;
                     req.url = req.originalUrl;
