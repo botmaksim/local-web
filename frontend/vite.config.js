@@ -8,7 +8,7 @@ export default defineConfig({
     // In dev mode, proxy /api requests to the backend server
     // so App.jsx never needs to hardcode http://localhost:9091
     proxy: {
-      '/api': {
+      '/__smartproxy_api': {
         target: 'http://localhost:9091',
         changeOrigin: true,
       },

@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import './index.css';
 
-// In dev mode Vite proxies /api → localhost:9091 (see vite.config.js)
-const API_URL = '/api/devices';
+// In dev mode Vite proxies /__smartproxy_api → localhost:9091 (see vite.config.js)
+const API_URL = '/__smartproxy_api/devices';
 
 function App() {
   const [devices, setDevices]   = useState([]);

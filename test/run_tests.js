@@ -110,8 +110,8 @@ function waitForPort(port, timeout = 8000) {
 }
 
 // ── Helpers to register a device via API ─────────────────────────────────────
-async function addDevice(name, ip, protocol = 'http') {
-  const res = await request(`${PROXY_BASE}/api/devices`, {
+  async function addDevice(name, ip, protocol = 'http') {
+  const res = await request(`${PROXY_BASE}/__smartproxy_api/devices`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, ip, protocol }),
@@ -121,7 +121,7 @@ async function addDevice(name, ip, protocol = 'http') {
 }
 
 async function deleteDevice(id) {
-  await request(`${PROXY_BASE}/api/devices/${id}`, { method: 'DELETE' });
+  await request(`${PROXY_BASE}/__smartproxy_api/devices/${id}`, { method: 'DELETE' });
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -152,7 +152,7 @@ async function main() {
   }
 
   // ── Clean up any leftover test devices ──────────────────────────────────
-  const existing = await request(`${PROXY_BASE}/api/devices`);
+  const existing = await request(`${PROXY_BASE}/__smartproxy_api/devices`);
   const existingDevices = JSON.parse(existing.body);
   for (const d of existingDevices) {
     if (d.ip === DEVICE_IP) await deleteDevice(d.id);
@@ -167,13 +167,13 @@ async function main() {
 
   let createdDevice;
 
-  await test('GET /api/devices returns array', async () => {
-    const res = await request(`${PROXY_BASE}/api/devices`);
+  await test('GET /__smartproxy_api/devices returns array', async () => {
+    const res = await request(`${PROXY_BASE}/__smartproxy_api/devices`);
     assert(res.status === 200, `status ${res.status}`);
     assert(Array.isArray(JSON.parse(res.body)), 'not an array');
   });
 
-  await test('POST /api/devices creates device', async () => {
+  await test('POST /__smartproxy_api/devices creates device', async () => {
     createdDevice = await addDevice('Test Device', DEVICE_IP, 'http');
     assert(createdDevice.id,      'missing id');
     assert(createdDevice.name === 'Test Device', 'wrong name');
@@ -181,8 +181,8 @@ async function main() {
     assert(createdDevice.protocol === 'http',    'wrong protocol');
   });
 
-  await test('POST /api/devices rejects invalid IP', async () => {
-    const res = await request(`${PROXY_BASE}/api/devices`, {
+  await test('POST /__smartproxy_api/devices rejects invalid IP', async () => {
+    const res = await request(`${PROXY_BASE}/__smartproxy_api/devices`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'Bad', ip: 'not-an-ip', protocol: 'http' }),
@@ -190,8 +190,8 @@ async function main() {
     assert(res.status === 400, `expected 400, got ${res.status}`);
   });
 
-  await test('POST /api/devices rejects empty name', async () => {
-    const res = await request(`${PROXY_BASE}/api/devices`, {
+  await test('POST /__smartproxy_api/devices rejects empty name', async () => {
+    const res = await request(`${PROXY_BASE}/__smartproxy_api/devices`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: '   ', ip: DEVICE_IP, protocol: 'http' }),
@@ -199,8 +199,8 @@ async function main() {
     assert(res.status === 400, `expected 400, got ${res.status}`);
   });
 
-  await test('POST /api/devices rejects invalid protocol', async () => {
-    const res = await request(`${PROXY_BASE}/api/devices`, {
+  await test('POST /__smartproxy_api/devices rejects invalid protocol', async () => {
+    const res = await request(`${PROXY_BASE}/__smartproxy_api/devices`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'X', ip: DEVICE_IP, protocol: 'ftp' }),
@@ -208,8 +208,8 @@ async function main() {
     assert(res.status === 400, `expected 400, got ${res.status}`);
   });
 
-  await test('PUT /api/devices/:id updates device', async () => {
-    const res = await request(`${PROXY_BASE}/api/devices/${createdDevice.id}`, {
+  await test('PUT /__smartproxy_api/devices/:id updates device', async () => {
+    const res = await request(`${PROXY_BASE}/__smartproxy_api/devices/${createdDevice.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'Updated Name' }),
@@ -218,12 +218,12 @@ async function main() {
     assert(JSON.parse(res.body).name === 'Updated Name', 'name not updated');
   });
 
-  await test('DELETE /api/devices/:id removes device', async () => {
+  await test('DELETE /__smartproxy_api/devices/:id removes device', async () => {
     // Re-add so we can delete
     const d = await addDevice('TempDel', DEVICE_IP, 'http');
-    const res = await request(`${PROXY_BASE}/api/devices/${d.id}`, { method: 'DELETE' });
+    const res = await request(`${PROXY_BASE}/__smartproxy_api/devices/${d.id}`, { method: 'DELETE' });
     assert(res.status === 200, `status ${res.status}`);
-    const list = JSON.parse((await request(`${PROXY_BASE}/api/devices`)).body);
+    const list = JSON.parse((await request(`${PROXY_BASE}/__smartproxy_api/devices`)).body);
     assert(!list.some(x => x.id === d.id), 'device still present');
   });
 

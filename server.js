@@ -4,6 +4,7 @@ const cheerio = require('cheerio');
 const fs = require('fs');
 const cors = require('cors');
 const path = require('path');
+const cookieParser = require('cookie-parser');
 
 const app = express();
 const PORT = 9091;
@@ -11,6 +12,7 @@ const DATA_DIR = path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'devices.json');
 
 app.use(express.json());
+app.use(cookieParser());
 app.use(cors());
 
 // ---------------------------------------------------------------------------
@@ -144,7 +146,7 @@ devicesRouter.delete('/:id', (req, res) => {
     res.json({ success: true });
 });
 
-app.use('/api/devices', devicesRouter);
+app.use('/__smartproxy_api/devices', devicesRouter);
 
 // ---------------------------------------------------------------------------
 // Proxy middleware (selfHandleResponse: false — stable, no event-loop drain)
@@ -212,6 +214,19 @@ const proxy = createProxyMiddleware({
 
             if (headers['set-cookie']) {
                 headers['set-cookie'] = rewriteCookies(headers['set-cookie'], targetIp);
+            } else {
+                headers['set-cookie'] = [];
+            }
+            
+            // Set the active context cookie for 60 seconds.
+            // If it's an array, push it. If it's a string, convert to array.
+            const spCookie = `sp_active_device=${targetIp}; Path=/; Max-Age=60; SameSite=Lax`;
+            if (Array.isArray(headers['set-cookie'])) {
+                headers['set-cookie'].push(spCookie);
+            } else if (typeof headers['set-cookie'] === 'string') {
+                headers['set-cookie'] = [headers['set-cookie'], spCookie];
+            } else {
+                headers['set-cookie'] = spCookie;
             }
 
             const contentType = (headers['content-type'] || '').toLowerCase();
@@ -332,7 +347,7 @@ const rewriteHtml = (html, targetIp, originalUrl = '') => {
 // ---------------------------------------------------------------------------
 
 app.use((req, res, next) => {
-    if (req.path.startsWith('/api/')) return next();
+    if (req.path.startsWith('/__smartproxy_api/')) return next();
 
     const devices = getDevices();
     const firstSegment = req.path.split('/').filter(Boolean)[0] || '';
@@ -346,31 +361,36 @@ app.use((req, res, next) => {
     }
 
     // ── Referer-based routing: asset requests without IP prefix ──────────────
-    const sourceUrl = req.headers.referer || req.headers.origin;
+    let sourceUrl = req.headers.referer || req.headers.origin;
+    let refIp = '';
+    
     if (sourceUrl) {
         try {
             const refUrl = new URL(sourceUrl);
-            const refIp = refUrl.pathname.split('/').filter(Boolean)[0] || '';
-            if (isValidIp(refIp) && devices.some(d => d.ip === refIp)) {
-                
-                // If a script dynamically redirects the browser to the root (e.g. window.location = "/"),
-                // it's a top-level HTML navigation. We intercept it and issue a 302 redirect back to the device.
-                if (req.path === '/' && req.method === 'GET') {
-                    const accept = req.headers.accept || '';
-                    if (accept.includes('text/html')) {
-                        return res.redirect(`/${refIp}/`);
-                    }
-                }
-
-                if (!req.originalUrl.startsWith(`/${refIp}`)) {
-                    // Force the browser to update its address bar and context 
-                    // by issuing a 307 Temporary Redirect (preserves POST bodies).
-                    // This ensures subsequent JS redirects have the correct referer.
-                    return res.redirect(307, `/${refIp}${req.originalUrl}`);
-                }
-                return proxy(req, res, next);
-            }
+            refIp = refUrl.pathname.split('/').filter(Boolean)[0] || '';
         } catch { /* ignore URL parse errors */ }
+    } else if (req.cookies && req.cookies.sp_active_device) {
+        // Fallback: Use the session cookie if referer is missing
+        refIp = req.cookies.sp_active_device;
+    }
+
+    if (refIp && isValidIp(refIp) && devices.some(d => d.ip === refIp)) {
+        // If a script dynamically redirects the browser to the root (e.g. window.location = "/"),
+        // it's a top-level HTML navigation. We intercept it and issue a 302 redirect back to the device.
+        if (req.path === '/' && req.method === 'GET') {
+            const accept = req.headers.accept || '';
+            if (accept.includes('text/html')) {
+                return res.redirect(`/${refIp}/`);
+            }
+        }
+
+        if (!req.originalUrl.startsWith(`/${refIp}`)) {
+            // Force the browser to update its address bar and context 
+            // by issuing a 307 Temporary Redirect (preserves POST bodies).
+            // This ensures subsequent JS redirects have the correct referer.
+            return res.redirect(307, `/${refIp}${req.originalUrl}`);
+        }
+        return proxy(req, res, next);
     }
 
     next();
