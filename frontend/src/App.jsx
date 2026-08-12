@@ -5,20 +5,20 @@ import './index.css';
 const API_URL = '/__smartproxy_api/devices';
 
 function App() {
-  const [devices, setDevices]   = useState([]);
-  const [loading, setLoading]   = useState(true);
-  const [error, setError]       = useState(null);
+  const [devices, setDevices] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   // Add-form state
-  const [name, setName]         = useState('');
-  const [ip, setIp]             = useState('');
+  const [name, setName] = useState('');
+  const [ip, setIp] = useState('');
   const [protocol, setProtocol] = useState('http');
-  const [adding, setAdding]     = useState(false);
+  const [adding, setAdding] = useState(false);
 
   // Edit state
-  const [editingId, setEditingId]     = useState(null);
-  const [editName, setEditName]       = useState('');
-  const [editIp, setEditIp]           = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState('');
+  const [editIp, setEditIp] = useState('');
   const [editProtocol, setEditProtocol] = useState('http');
 
   // ─── Fetch ───────────────────────────────────────────────────────────────
@@ -107,7 +107,6 @@ function App() {
     <div className="dashboard">
       <header>
         <h1>Smart Proxy</h1>
-        <p>Единая точка входа для устройств домашней сети</p>
       </header>
 
       {error && (
