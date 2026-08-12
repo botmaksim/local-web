@@ -13,7 +13,10 @@ const DB_FILE = path.join(DATA_DIR, 'devices.json');
 
 app.use(express.json());
 app.use(cookieParser());
-app.use(cors());
+// cors() is intentionally NOT applied globally.
+// The management API (/__smartproxy_api/) must be same-origin only.
+// Proxied device responses carry their own CORS headers.
+// If you need to expose specific routes, apply cors() selectively on those routes.
 
 // ---------------------------------------------------------------------------
 // In-memory device cache — invalidated only on writes
@@ -47,14 +50,34 @@ const saveDevices = (devices) => {
     _deviceCache = devices;
 };
 
+// Each octet must be a decimal 0-255 with no leading zeros
+const OCTET_RE = /^(25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)$/;
+
 const isValidIp = (str) => {
     if (!str) return false;
-    const [ipPart] = str.split(':');
+    const [ipPart, portPart, ...rest] = str.split(':');
+    if (rest.length > 0) return false; // More than one colon is invalid
+
     const parts = ipPart.split('.');
-    return parts.length === 4 && parts.every(p => {
-        const n = parseInt(p, 10);
-        return n >= 0 && n <= 255;
-    });
+    if (parts.length !== 4 || !parts.every(p => OCTET_RE.test(p))) return false;
+
+    if (portPart !== undefined) {
+        if (!/^\d+$/.test(portPart)) return false;
+        const port = parseInt(portPart, 10);
+        if (port <= 0 || port > 65535) return false;
+    }
+
+    return true;
+};
+
+// Block loopback / link-local addresses to prevent SSRF
+// Set ALLOW_LOOPBACK=true to bypass this check in test/dev environments
+const BLOCKED_PREFIXES = ['127.', '0.0.0.0', '169.254.'];
+const isBlockedIp = (str) => {
+    if (process.env.ALLOW_LOOPBACK === 'true') return false;
+    if (!str) return false;
+    const [ipPart] = str.split(':');
+    return BLOCKED_PREFIXES.some(prefix => ipPart.startsWith(prefix)) || ipPart === '0.0.0.0';
 };
 
 const extractTargetFromUrl = (url, devices) => {
@@ -88,6 +111,9 @@ devicesRouter.post('/', (req, res) => {
     if (!isValidIp(ip)) {
         return res.status(400).json({ error: 'Invalid IP address' });
     }
+    if (isBlockedIp(ip)) {
+        return res.status(400).json({ error: 'Blocked IP address' });
+    }
     if (!['http', 'https'].includes(protocol)) {
         return res.status(400).json({ error: 'Protocol must be http or https' });
     }
@@ -111,6 +137,9 @@ devicesRouter.put('/:id', (req, res) => {
     }
     if (ip !== undefined && !isValidIp(ip)) {
         return res.status(400).json({ error: 'Invalid IP address' });
+    }
+    if (ip !== undefined && isBlockedIp(ip)) {
+        return res.status(400).json({ error: 'Blocked IP address' });
     }
     if (protocol !== undefined && !['http', 'https'].includes(protocol)) {
         return res.status(400).json({ error: 'Protocol must be http or https' });
@@ -149,7 +178,102 @@ devicesRouter.delete('/:id', (req, res) => {
 app.use('/__smartproxy_api/devices', devicesRouter);
 
 // ---------------------------------------------------------------------------
-// Proxy middleware (selfHandleResponse: false — stable, no event-loop drain)
+// Utilities
+// ---------------------------------------------------------------------------
+
+const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const replaceAbsoluteUrls = (text, targetIp) => {
+    const re = new RegExp(`https?://${escapeRegex(targetIp)}(:[0-9]+)?`, 'g');
+    let replaced = text.replace(re, `/${targetIp}`);
+
+    // Rewrite common JS redirects that point exactly to root "/"
+    replaced = replaced.replace(
+        /(location\.href|location\.replace|location\.assign|window\.location|top\.location\.href|top\.location|parent\.location|window\.top\.location)\s*(=|\()\s*(['"])\/(['"])/g,
+        `$1$2$3/${targetIp}/$4`
+    );
+
+    return replaced;
+};
+
+const rewriteCookies = (setCookie, targetIp) => {
+    const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
+    return cookies.map(c => {
+        let rc = c.replace(/Domain=[^;]+;?\s*/gi, '');
+        rc = rc.replace(/Path=([^;]+)(;?\s*)/gi, (_m, p) => {
+            let np = p.trim().replace(/\/$/, '');
+            if (np === '' || np === '/') np = `/${targetIp}`;
+            else if (np.startsWith('/') && !np.startsWith(`/${targetIp}`)) {
+                np = `/${targetIp}${np}`;
+            }
+            return `Path=${np}; `;
+        });
+        if (!/Path=/i.test(rc)) rc += `; Path=/${targetIp}`;
+        return rc.trim();
+    });
+};
+
+const rewriteHtml = (html, targetIp, originalUrl = '') => {
+    const $ = cheerio.load(html, { decodeEntities: false });
+
+    // Compute dynamic base path from the current request URL
+    const urlPath = originalUrl.split('?')[0];
+    let basePath = `/${targetIp}/`;
+    if (urlPath.startsWith(`/${targetIp}/`)) {
+        basePath = urlPath.substring(0, urlPath.lastIndexOf('/') + 1);
+    }
+
+    // Overwrite existing <base> if present; otherwise inject one at the top of <head>
+    if ($('base').length > 0) {
+        $('base').attr('href', basePath);
+    } else {
+        const baseTag = `<base href="${basePath}">`;
+        if ($('head').length > 0) $('head').prepend(baseTag);
+        else $.root().prepend(`<head>${baseTag}</head>`);
+    }
+
+    const rewrite = (val) => {
+        if (!val || val.startsWith(`/${targetIp}`) ||
+            /^(https?:|\/\/|data:|#|javascript:)/i.test(val)) return val;
+        if (val.startsWith('/')) return `/${targetIp}${val}`;
+        return val;
+    };
+    $('[href]').each((_, el) => { const v = rewrite($(el).attr('href')); if (v) $(el).attr('href', v); });
+    $('[src]').each((_, el)  => { const v = rewrite($(el).attr('src'));  if (v) $(el).attr('src', v);  });
+    $('form[action]').each((_, el) => { const v = rewrite($(el).attr('action')); if (v) $(el).attr('action', v); });
+
+    // Rewrite srcset attributes (responsive images: "url descriptor, url descriptor, ...")
+    $('[srcset]').each((_, el) => {
+        const srcset = $(el).attr('srcset');
+        if (!srcset) return;
+        const rewritten = srcset.split(',').map(part => {
+            const trimmed = part.trim();
+            const spaceIdx = trimmed.search(/\s/);
+            if (spaceIdx === -1) return rewrite(trimmed);
+            const url = trimmed.slice(0, spaceIdx);
+            const descriptor = trimmed.slice(spaceIdx); // e.g. " 300w" or " 2x"
+            return rewrite(url) + descriptor;
+        }).join(', ');
+        $(el).attr('srcset', rewritten);
+    });
+
+    // Rewrite meta refresh tags
+    $('meta[http-equiv="refresh" i]').each((_, el) => {
+        let content = $(el).attr('content');
+        if (content) {
+            content = content.replace(/(url\s*=\s*)(['"]?)\/([^/'"]*)(['"]?)/i, (match, p1, p2, p3, p4) => {
+                if (!p3) return `${p1}${p2}/${targetIp}/${p4}`; // it was just "/"
+                return `${p1}${p2}/${targetIp}/${p3}${p4}`;
+            });
+            $(el).attr('content', content);
+        }
+    });
+
+    return $.html();
+};
+
+// ---------------------------------------------------------------------------
+// Proxy middleware (selfHandleResponse: true — required for body rewriting)
 // ---------------------------------------------------------------------------
 
 const proxy = createProxyMiddleware({
@@ -269,78 +393,7 @@ const proxy = createProxyMiddleware({
     },
 });
 
-// ---------------------------------------------------------------------------
-// Utilities
-// ---------------------------------------------------------------------------
 
-const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-const replaceAbsoluteUrls = (text, targetIp) => {
-    const re = new RegExp(`https?://${escapeRegex(targetIp)}(:[0-9]+)?`, 'g');
-    let replaced = text.replace(re, `/${targetIp}`);
-    
-    // Also rewrite common JS redirects that point exactly to root "/"
-    replaced = replaced.replace(/(location\.href|location\.replace|location\.assign|window\.location|top\.location\.href|top\.location|parent\.location|window\.top\.location)\s*(=|\()\s*(['"])\/(['"])/g, `$1$2$3/${targetIp}/$4`);
-    
-    return replaced;
-};
-
-const rewriteCookies = (setCookie, targetIp) => {
-    const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
-    return cookies.map(c => {
-        let rc = c.replace(/Domain=[^;]+;?\s*/gi, '');
-        rc = rc.replace(/Path=([^;]+)(;?\s*)/gi, (_m, p) => {
-            let np = p.trim().replace(/\/$/, '');
-            if (np === '' || np === '/') np = `/${targetIp}`;
-            else if (np.startsWith('/') && !np.startsWith(`/${targetIp}`)) {
-                np = `/${targetIp}${np}`;
-            }
-            return `Path=${np}; `;
-        });
-        if (!/Path=/i.test(rc)) rc += `; Path=/${targetIp}`;
-        return rc.trim();
-    });
-};
-
-const rewriteHtml = (html, targetIp, originalUrl = '') => {
-    const $ = cheerio.load(html, { decodeEntities: false });
-    
-    // Compute dynamic base path from the current request URL
-    const urlPath = originalUrl.split('?')[0];
-    let basePath = `/${targetIp}/`;
-    if (urlPath.startsWith(`/${targetIp}/`)) {
-        basePath = urlPath.substring(0, urlPath.lastIndexOf('/') + 1);
-    }
-    
-    if ($('base').length === 0) {
-        const baseTag = `<base href="${basePath}">`;
-        if ($('head').length > 0) $('head').prepend(baseTag);
-        else $.root().prepend(`<head>${baseTag}</head>`);
-    }
-    const rewrite = (val) => {
-        if (!val || val.startsWith(`/${targetIp}`) ||
-            /^(https?:|\/\/|data:|#|javascript:)/i.test(val)) return val;
-        if (val.startsWith('/')) return `/${targetIp}${val}`;
-        return val;
-    };
-    $('[href]').each((_, el) => { const v = rewrite($(el).attr('href')); if (v) $(el).attr('href', v); });
-    $('[src]').each((_, el)  => { const v = rewrite($(el).attr('src'));  if (v) $(el).attr('src', v);  });
-    $('form[action]').each((_, el) => { const v = rewrite($(el).attr('action')); if (v) $(el).attr('action', v); });
-    
-    // Rewrite meta refresh tags
-    $('meta[http-equiv="refresh" i]').each((_, el) => {
-        let content = $(el).attr('content');
-        if (content) {
-            content = content.replace(/(url\s*=\s*)(['"]?)\/([^/']*)(['"]?)/i, (match, p1, p2, p3, p4) => {
-                if (!p3) return `${p1}${p2}/${targetIp}/${p4}`; // it was just "/"
-                return `${p1}${p2}/${targetIp}/${p3}${p4}`;
-            });
-            $(el).attr('content', content);
-        }
-    });
-    
-    return $.html();
-};
 
 // ---------------------------------------------------------------------------
 // Routing middleware

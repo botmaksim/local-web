@@ -6,8 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node test/run_tests.js",
-    "test:spawn": "node test/run_tests.js --spawn"
+    "test": "ALLOW_LOOPBACK=true node test/run_tests.js",
+    "test:spawn": "ALLOW_LOOPBACK=true node test/run_tests.js --spawn"
   },
   "keywords": [],
   "author": "",

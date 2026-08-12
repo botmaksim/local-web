@@ -110,7 +110,7 @@ function waitForPort(port, timeout = 8000) {
 }
 
 // ── Helpers to register a device via API ─────────────────────────────────────
-  async function addDevice(name, ip, protocol = 'http') {
+async function addDevice(name, ip, protocol = 'http') {
   const res = await request(`${PROXY_BASE}/__smartproxy_api/devices`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -339,6 +339,313 @@ async function main() {
     const res = await request(`${PROXY_BASE}/some-spa-route`);
     // Either SPA index.html (200) or "Frontend not built" (404) — both are acceptable
     assert(res.status === 200 || res.status === 404, `unexpected status ${res.status}`);
+  });
+
+  // ── Validation & Security ────────────────────────────────────────────────
+  console.log('\n── Validation & Security ────────────────────────');
+
+  await test('POST rejects IP with octet > 255', async () => {
+    const res = await request(`${PROXY_BASE}/__smartproxy_api/devices`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Bad', ip: '192.168.1.256', protocol: 'http' }),
+    });
+    assert(res.status === 400, `expected 400, got ${res.status}`);
+  });
+
+  await test('POST rejects incomplete IP (3 octets)', async () => {
+    const res = await request(`${PROXY_BASE}/__smartproxy_api/devices`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Bad', ip: '192.168.1', protocol: 'http' }),
+    });
+    assert(res.status === 400, `expected 400, got ${res.status}`);
+  });
+
+  await test('POST rejects IP with 5 octets', async () => {
+    const res = await request(`${PROXY_BASE}/__smartproxy_api/devices`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Bad', ip: '1.2.3.4.5', protocol: 'http' }),
+    });
+    assert(res.status === 400, `expected 400, got ${res.status}`);
+  });
+
+  await test('POST rejects non-numeric octets', async () => {
+    const res = await request(`${PROXY_BASE}/__smartproxy_api/devices`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Bad', ip: 'abc.def.ghi.jkl', protocol: 'http' }),
+    });
+    assert(res.status === 400, `expected 400, got ${res.status}`);
+  });
+
+  await test('POST rejects leading-zero octet (01.2.3.4)', async () => {
+    const res = await request(`${PROXY_BASE}/__smartproxy_api/devices`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Bad', ip: '01.168.1.1', protocol: 'http' }),
+    });
+    assert(res.status === 400, `expected 400, got ${res.status}`);
+  });
+
+  await test('POST accepts valid IP with port (192.168.1.100:8080)', async () => {
+    const d = await addDevice('PortDevice', '192.168.1.100:8080', 'http');
+    assert(d.id, 'missing id');
+    assert(d.ip === '192.168.1.100:8080', `wrong ip: ${d.ip}`);
+    await deleteDevice(d.id);
+  });
+
+  await test('POST rejects SSRF bypass with @ (192.168.1.1:80@malicious.com)', async () => {
+    const res = await request(`${PROXY_BASE}/__smartproxy_api/devices`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Bad', ip: '192.168.1.1:80@malicious.com', protocol: 'http' }),
+    });
+    assert(res.status === 400, `expected 400, got ${res.status}`);
+  });
+
+  await test('POST rejects SSRF bypass with path (192.168.1.1:80/evil)', async () => {
+    const res = await request(`${PROXY_BASE}/__smartproxy_api/devices`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Bad', ip: '192.168.1.1:80/evil', protocol: 'http' }),
+    });
+    assert(res.status === 400, `expected 400, got ${res.status}`);
+  });
+
+  await test('POST rejects invalid port number (65536)', async () => {
+    const res = await request(`${PROXY_BASE}/__smartproxy_api/devices`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Bad', ip: '192.168.1.1:65536', protocol: 'http' }),
+    });
+    assert(res.status === 400, `expected 400, got ${res.status}`);
+  });
+
+  await test('Management API response has no CORS header', async () => {
+    const res = await request(`${PROXY_BASE}/__smartproxy_api/devices`);
+    assert(
+      !res.headers['access-control-allow-origin'],
+      `unexpected CORS header: ${res.headers['access-control-allow-origin']}`
+    );
+  });
+
+  // ── Complex Redirects ────────────────────────────────────────────────────
+  console.log('\n── Complex Redirects ────────────────────────────');
+
+  await test('302 to absolute self-URL is rewritten', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/redirect/absolute-url`);
+    assert(res.status === 302, `expected 302, got ${res.status}`);
+    const loc = res.headers['location'] || '';
+    assertIncludes(loc, `/${DEVICE_IP}/dashboard`, 'Location');
+    assertNotIncludes(loc, 'http://127.0.0.1', 'Location');
+  });
+
+  await test('302 with query params: Location rewritten + query preserved', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/redirect/with-query`);
+    assert(res.status === 302, `expected 302, got ${res.status}`);
+    const loc = res.headers['location'] || '';
+    assertIncludes(loc, `/${DEVICE_IP}/search`, 'Location path');
+    assertIncludes(loc, 'q=hello', 'Location query q');
+    assertIncludes(loc, 'page=2', 'Location query page');
+    assertIncludes(loc, 'sort=asc', 'Location query sort');
+  });
+
+  await test('301 permanent redirect Location is rewritten', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/redirect/permanent`);
+    assert(res.status === 301, `expected 301, got ${res.status}`);
+    const loc = res.headers['location'] || '';
+    assertIncludes(loc, `/${DEVICE_IP}/dashboard`, 'Location');
+  });
+
+  await test('302 to external URL is NOT rewritten', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/redirect/external`);
+    assert(res.status === 302, `expected 302, got ${res.status}`);
+    const loc = res.headers['location'] || '';
+    assertIncludes(loc, 'https://example.com/login', 'Location');
+    assertNotIncludes(loc, DEVICE_IP, 'Location must not contain device IP');
+  });
+
+  await test('Redirect chain step 1: /chain-start → /{device}/redirect/chain-end', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/redirect/chain-start`);
+    assert(res.status === 302, `expected 302, got ${res.status}`);
+    const loc = res.headers['location'] || '';
+    assertIncludes(loc, `/${DEVICE_IP}/redirect/chain-end`, 'Location');
+  });
+
+  await test('Redirect chain step 2: /chain-end → /{device}/dashboard', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/redirect/chain-end`);
+    assert(res.status === 302, `expected 302, got ${res.status}`);
+    const loc = res.headers['location'] || '';
+    assertIncludes(loc, `/${DEVICE_IP}/dashboard`, 'Location');
+  });
+
+  // ── API Methods & Responses ──────────────────────────────────────────────
+  console.log('\n── API Methods & Responses ──────────────────────');
+
+  await test('POST /api/items → 201, Location rewritten, body URLs rewritten', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/api/items`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'widget' }),
+    });
+    assert(res.status === 201, `expected 201, got ${res.status}`);
+    const loc = res.headers['location'] || '';
+    assertIncludes(loc, `/${DEVICE_IP}/api/items/42`, 'Location');
+    assertNotIncludes(loc, 'http://127.0.0.1', 'Location');
+    const body = JSON.parse(res.body);
+    assert(body.url.includes(`/${DEVICE_IP}/`), `url not rewritten: ${body.url}`);
+  });
+
+  await test('PUT /api/items/1 → 200, body URLs rewritten', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/api/items/1`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'updated' }),
+    });
+    assert(res.status === 200, `expected 200, got ${res.status}`);
+    const body = JSON.parse(res.body);
+    assert(body.updated === true, 'updated flag missing');
+    assert(body.url.includes(`/${DEVICE_IP}/`), `url not rewritten: ${body.url}`);
+  });
+
+  await test('DELETE /api/items/42 → 204 No Content', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/api/items/42`, { method: 'DELETE' });
+    assert(res.status === 204, `expected 204, got ${res.status}`);
+    assert(res.body === '', `expected empty body, got: ${res.body}`);
+  });
+
+  await test('404 from device is passed through to client', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/not-found`);
+    assert(res.status === 404, `expected 404, got ${res.status}`);
+    const body = JSON.parse(res.body);
+    assert(body.error === 'Not Found', `unexpected body: ${res.body}`);
+  });
+
+  await test('Nested JSON: deep URLs rewritten', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/api/nested`);
+    assert(res.status === 200, `status ${res.status}`);
+    const body = JSON.parse(res.body);
+    assertNotIncludes(JSON.stringify(body.device), 'http://127.0.0.1', 'endpoints');
+    assert(body.device.endpoints.status.includes(`/${DEVICE_IP}/`), 'status url not rewritten');
+    assert(body.device.endpoints.control.includes(`/${DEVICE_IP}/`), 'control url not rewritten');
+    assert(body.device.endpoints.ui.includes(`/${DEVICE_IP}/`), 'ui url not rewritten');
+  });
+
+  await test('Nested JSON: non-URL fields untouched (timestamp, version)', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/api/nested`);
+    const body = JSON.parse(res.body);
+    assert(body.meta.createdAt === '2024-01-01T10:00:00Z', `timestamp mangled: ${body.meta.createdAt}`);
+    assert(body.meta.version === '1.0.0', `version mangled: ${body.meta.version}`);
+  });
+
+  await test('Array of objects: all URL fields rewritten', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/api/users`);
+    assert(res.status === 200, `status ${res.status}`);
+    const body = JSON.parse(res.body);
+    assert(Array.isArray(body), 'expected array');
+    for (const user of body) {
+      assert(user.profile.includes(`/${DEVICE_IP}/`), `profile url not rewritten: ${user.profile}`);
+      assert(user.avatar.includes(`/${DEVICE_IP}/`),  `avatar url not rewritten: ${user.avatar}`);
+      assertNotIncludes(user.profile, 'http://127.0.0.1', 'profile');
+    }
+  });
+
+  // ── Cookie Scenarios ─────────────────────────────────────────────────────
+  console.log('\n── Cookie Scenarios ─────────────────────────────');
+
+  await test('Multiple Set-Cookie: all paths rewritten to /{device}/...', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/cookies/multiple`);
+    const cookies = [res.headers['set-cookie']].flat().filter(Boolean);
+    // Should have 3 device cookies + 1 sp_active_device
+    const deviceCookies = cookies.filter(c => !c.startsWith('sp_active_device'));
+    assert(deviceCookies.length === 3, `expected 3 device cookies, got ${deviceCookies.length}`);
+    for (const c of deviceCookies) {
+      assertIncludes(c, `/${DEVICE_IP}`, `cookie Path not rewritten: ${c}`);
+    }
+  });
+
+  await test('Multiple Set-Cookie: Domain attribute stripped', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/cookies/multiple`);
+    const cookies = [res.headers['set-cookie']].flat().filter(Boolean);
+    for (const c of cookies) {
+      assertNotIncludes(c, 'Domain=', `Domain not stripped: ${c}`);
+    }
+  });
+
+  await test('Cookie without Path gets /{device} path added', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/cookies/no-path`);
+    const cookies = [res.headers['set-cookie']].flat().filter(Boolean);
+    const csrf = cookies.find(c => c.startsWith('csrf='));
+    assert(csrf, 'csrf cookie not found');
+    assertIncludes(csrf, `Path=/${DEVICE_IP}`, `Path not set: ${csrf}`);
+  });
+
+  await test('sp_active_device tracking cookie is set on every proxied response', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/`);
+    const cookies = [res.headers['set-cookie']].flat().filter(Boolean);
+    const sp = cookies.find(c => c.startsWith('sp_active_device='));
+    assert(sp, 'sp_active_device cookie missing');
+    assertIncludes(sp, DEVICE_IP, 'sp_active_device must contain device IP');
+  });
+
+  // ── HTML Edge Cases ──────────────────────────────────────────────────────
+  console.log('\n── HTML Edge Cases ──────────────────────────────');
+
+  await test('Existing <base> is overwritten — no duplicate <base> tags', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/page/with-base`);
+    const count = (res.body.match(/<base/gi) || []).length;
+    assert(count === 1, `expected exactly 1 <base>, found ${count}`);
+    assertIncludes(res.body, `/${DEVICE_IP}/`, '<base href');
+    assertNotIncludes(res.body, '<base href="/">', 'original base must be replaced');
+  });
+
+  await test('srcset attribute: all URLs rewritten', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/page/with-srcset`);
+    assertIncludes(res.body, `/${DEVICE_IP}/logo-300.png 300w`, 'srcset 300w');
+    assertIncludes(res.body, `/${DEVICE_IP}/logo-600.png 600w`, 'srcset 600w');
+    assertIncludes(res.body, `/${DEVICE_IP}/logo-1200.png 1200w`, 'srcset 1200w');
+    assertNotIncludes(res.body, 'srcset="/logo-300.png', 'unrewritten srcset found');
+  });
+
+  await test('<picture><source srcset> URLs rewritten', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/page/with-srcset`);
+    assertIncludes(res.body, `/${DEVICE_IP}/banner-mobile.jpg`, '<source> mobile');
+    assertIncludes(res.body, `/${DEVICE_IP}/banner-desktop.jpg`, '<source> desktop');
+  });
+
+  await test('<link rel="canonical"> href rewritten', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/page/with-canonical`);
+    assertNotIncludes(res.body, 'http://127.0.0.1', 'absolute URL in canonical');
+    assertIncludes(res.body, `/${DEVICE_IP}/page/with-canonical`, 'canonical href');
+  });
+
+  await test('Inline JS: location.href = "/" and window.location = "/" rewritten', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/page/js-redirect`);
+    assertIncludes(res.body, `"/${DEVICE_IP}/"`, 'JS redirect target');
+    assertNotIncludes(res.body, 'href = "/"', 'unrewritten JS href');
+    assertNotIncludes(res.body, "location = \"/\"", 'unrewritten window.location');
+  });
+
+  // ── Query String Passthrough ─────────────────────────────────────────────
+  console.log('\n── Query String Passthrough ─────────────────────');
+
+  await test('Query params passed through and echoed correctly by device', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/search?q=hello+world&page=2&sort=asc`);
+    assert(res.status === 200, `status ${res.status}`);
+    const body = JSON.parse(res.body);
+    assert(body.echo.q === 'hello world', `q param: ${body.echo.q}`);
+    assert(body.echo.page === '2', `page param: ${body.echo.page}`);
+    assert(body.echo.sort === 'asc', `sort param: ${body.echo.sort}`);
+  });
+
+  await test('URL-encoded query params preserved exactly', async () => {
+    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/search?q=caf%C3%A9&lang=ru`);
+    assert(res.status === 200, `status ${res.status}`);
+    const body = JSON.parse(res.body);
+    assert(body.echo.q === 'café', `encoded param: ${body.echo.q}`);
+    assert(body.echo.lang === 'ru', `lang: ${body.echo.lang}`);
   });
 
   // ── Cleanup ───────────────────────────────────────────────────────────────
