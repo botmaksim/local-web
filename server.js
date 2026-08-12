@@ -363,8 +363,10 @@ app.use((req, res, next) => {
                 }
 
                 if (!req.originalUrl.startsWith(`/${refIp}`)) {
-                    req.originalUrl = `/${refIp}${req.originalUrl}`;
-                    req.url = req.originalUrl;
+                    // Force the browser to update its address bar and context 
+                    // by issuing a 307 Temporary Redirect (preserves POST bodies).
+                    // This ensures subsequent JS redirects have the correct referer.
+                    return res.redirect(307, `/${refIp}${req.originalUrl}`);
                 }
                 return proxy(req, res, next);
             }
