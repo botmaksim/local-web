@@ -330,6 +330,13 @@ const proxy = createProxyMiddleware({
     on: {
         proxyReq: (proxyReq, req, res) => {
             proxyReq.removeHeader('accept-encoding');
+            proxyReq.removeHeader('x-forwarded-for');
+            proxyReq.removeHeader('x-forwarded-host');
+            proxyReq.removeHeader('x-forwarded-proto');
+            proxyReq.removeHeader('cf-connecting-ip');
+            proxyReq.removeHeader('cf-visitor');
+            proxyReq.removeHeader('cf-ray');
+            proxyReq.removeHeader('cf-ipcountry');
             const target = extractTargetFromUrl(req.originalUrl, getDevices());
             if (!target) return;
             const { ip: targetIp, protocol: targetProtocol } = target;
@@ -369,7 +376,7 @@ const proxy = createProxyMiddleware({
                 let bodyStr = JSON.stringify(req.body);
                 bodyStr = bodyStr.replace(new RegExp(escapeRegex(proxyBase), 'g'), targetBase);
                 req.body = JSON.parse(bodyStr);
-                fixRequestBody(proxyReq, req);
+                console.log("REPLACED BODY:", req.body); fixRequestBody(proxyReq, req);
             }
 
             if (proxyReq.getHeader('origin')) {
