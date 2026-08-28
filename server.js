@@ -1,5 +1,5 @@
 const express = require('express');
-const { createProxyMiddleware } = require('http-proxy-middleware');
+const { createProxyMiddleware, fixRequestBody } = require('http-proxy-middleware');
 const cheerio = require('cheerio');
 const fs = require('fs');
 const cors = require('cors');
@@ -183,9 +183,43 @@ app.use('/__smartproxy_api/devices', devicesRouter);
 
 const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-const replaceAbsoluteUrls = (text, targetIp) => {
+const replaceAbsoluteUrls = (text, targetIp, req) => {
+    // Determine the external base URL (e.g. https://proxy.domain.com/192.168.100.10)
+    const proto = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+    const host = req.headers.host;
+    const proxyBase = `${proto}://${host}/${targetIp}`;
+
+    // We will replace absolute target URLs with proxyBase, not relative paths!
+    // This solves issues with OAuth redirect_uri expecting absolute URLs.
+    
+    // Replace standard format: http://192.168.100.10 -> https://proxy/192.168.100.10
     const re = new RegExp(`https?://${escapeRegex(targetIp)}(:[0-9]+)?`, 'g');
-    let replaced = text.replace(re, `/${targetIp}`);
+    let replaced = text.replace(re, proxyBase);
+
+    // Replace URL-encoded format
+    const encodedTarget = encodeURIComponent(targetIp);
+    const reEncoded = new RegExp(`https?%3A%2F%2F${encodedTarget}(%3A[0-9]+)?`, 'gi');
+    replaced = replaced.replace(reEncoded, encodeURIComponent(proxyBase));
+
+    // Replace JSON-escaped format (http:\/\/192.168.100.10)
+    const reJson = new RegExp(`https?:\\\\/\\\\/${escapeRegex(targetIp)}(:[0-9]+)?`, 'g');
+    // Note: JSON-escaped proxyBase
+    const escapedProxyBase = proxyBase.replace(/\//g, '\\/');
+    replaced = replaced.replace(reJson, escapedProxyBase);
+    
+    // Replace in Base64 state parameters (Home Assistant uses state=eyJ...)
+    replaced = replaced.replace(/state=([a-zA-Z0-9+/=%]+)/g, (match, b64) => {
+        try {
+            const unencoded = decodeURIComponent(b64);
+            const decoded = Buffer.from(unencoded, 'base64').toString('utf8');
+            if (decoded.includes(targetIp)) {
+                let replacedDecoded = decoded.replace(re, proxyBase);
+                replacedDecoded = replacedDecoded.replace(reJson, escapedProxyBase);
+                return 'state=' + encodeURIComponent(Buffer.from(replacedDecoded).toString('base64'));
+            }
+        } catch(e) {}
+        return match;
+    });
 
     // Rewrite common JS redirects that point exactly to root "/"
     replaced = replaced.replace(
@@ -294,12 +328,50 @@ const proxy = createProxyMiddleware({
     },
     ws: true,
     on: {
-        proxyReq: (proxyReq, req) => {
+        proxyReq: (proxyReq, req, res) => {
             proxyReq.removeHeader('accept-encoding');
             const target = extractTargetFromUrl(req.originalUrl, getDevices());
             if (!target) return;
             const { ip: targetIp, protocol: targetProtocol } = target;
             proxyReq.setHeader('host', targetIp);
+
+            const proto = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+            const host = req.headers.host;
+            const proxyBase = `${proto}://${host}/${targetIp}`;
+            const targetBase = `${targetProtocol}://${targetIp}`;
+
+            // Rewrite proxyReq path to restore targetBase
+            let path = proxyReq.path;
+            
+            // Restore standard format
+            path = path.replace(new RegExp(escapeRegex(proxyBase), 'g'), targetBase);
+            
+            // Restore URL-encoded format
+            path = path.replace(new RegExp(encodeURIComponent(proxyBase), 'gi'), encodeURIComponent(targetBase));
+            
+            // Restore Base64 state in URL
+            path = path.replace(/state=([a-zA-Z0-9+/=%]+)/g, (match, b64) => {
+                try {
+                    const unencoded = decodeURIComponent(b64);
+                    const decoded = Buffer.from(unencoded, 'base64').toString('utf8');
+                    if (decoded.includes(proxyBase)) {
+                        const restoredDecoded = decoded.replace(new RegExp(escapeRegex(proxyBase), 'g'), targetBase);
+                        return 'state=' + encodeURIComponent(Buffer.from(restoredDecoded).toString('base64'));
+                    }
+                } catch(e) {}
+                return match;
+            });
+
+            proxyReq.path = path;
+
+            if (req.body && Object.keys(req.body).length > 0) {
+                // Modify req.body directly before fixRequestBody serializes it
+                let bodyStr = JSON.stringify(req.body);
+                bodyStr = bodyStr.replace(new RegExp(escapeRegex(proxyBase), 'g'), targetBase);
+                req.body = JSON.parse(bodyStr);
+                fixRequestBody(proxyReq, req);
+            }
+
             if (proxyReq.getHeader('origin')) {
                 proxyReq.setHeader('origin', `${targetProtocol}://${targetIp}`);
             }
@@ -328,11 +400,36 @@ const proxy = createProxyMiddleware({
 
             if (headers['location']) {
                 let loc = headers['location'];
+                
+                const proto = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+                const host = req.headers.host;
+                const proxyBase = `${proto}://${host}/${targetIp}`;
+                
+                // If the backend sent an absolute URL matching itself, replace it with proxyBase
                 const re = new RegExp(`^https?://${escapeRegex(targetIp)}(:[0-9]+)?`);
-                loc = loc.replace(re, '');
+                loc = loc.replace(re, proxyBase);
+                
+                // If it's a relative URL, prepend /targetIp
                 if (loc.startsWith('/') && !loc.startsWith(`/${targetIp}`)) {
                     loc = `/${targetIp}${loc}`;
                 }
+                
+                // Also fix query parameters in the Location header!
+                loc = loc.replace(new RegExp(encodeURIComponent(`${targetProtocol}://${targetIp}`), 'gi'), encodeURIComponent(proxyBase));
+                
+                // Fix Base64 state in Location header
+                loc = loc.replace(/state=([a-zA-Z0-9+/=%]+)/g, (match, b64) => {
+                    try {
+                        const unencoded = decodeURIComponent(b64);
+                        const decoded = Buffer.from(unencoded, 'base64').toString('utf8');
+                        if (decoded.includes(targetIp)) {
+                            const replacedDecoded = decoded.replace(new RegExp(`https?://${escapeRegex(targetIp)}(:[0-9]+)?`, 'g'), proxyBase);
+                            return 'state=' + encodeURIComponent(Buffer.from(replacedDecoded).toString('base64'));
+                        }
+                    } catch(e) {}
+                    return match;
+                });
+
                 headers['location'] = loc;
             }
 
@@ -370,7 +467,7 @@ const proxy = createProxyMiddleware({
             proxyRes.on('end', () => {
                 let body = Buffer.concat(chunks).toString('utf8');
 
-                body = replaceAbsoluteUrls(body, targetIp);
+                body = replaceAbsoluteUrls(body, targetIp, req);
 
                 if (contentType.includes('text/html')) {
                     body = rewriteHtml(body, targetIp, req.originalUrl);
