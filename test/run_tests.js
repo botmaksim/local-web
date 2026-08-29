@@ -126,15 +126,17 @@ async function deleteDevice(id) {
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 async function main() {
-  let deviceServer, proxyServer;
+  let deviceServer, proxyServer, dummyRouterServer;
 
   if (SPAWN_MODE) {
     console.log('\n[setup] Spawning mock device and proxy servers…');
     deviceServer = spawn('node', [path.join(__dirname, 'http_device.js')], { stdio: 'inherit', env: { ...process.env, ALLOW_LOOPBACK: 'true' } });
+    dummyRouterServer = spawn('node', [path.join(__dirname, 'dummy_router.js')], { stdio: 'inherit', env: { ...process.env, ALLOW_LOOPBACK: 'true' } });
     proxyServer  = spawn('node', [path.join(__dirname, '../server.js')],  { stdio: 'inherit', env: { ...process.env, ALLOW_LOOPBACK: 'true' } });
 
     await Promise.all([
       waitForPort(DEVICE_PORT),
+      waitForPort(8080),
       waitForPort(PROXY_PORT),
     ]);
     console.log('[setup] Servers ready.\n');
@@ -650,6 +652,52 @@ async function main() {
     assert(body.echo.lang === 'ru', `lang: ${body.echo.lang}`);
   });
 
+  // ── HTTPS Dummy Router Tests ─────────────────────────────────────────────
+  console.log('\n── HTTPS Dummy Router ───────────────────────────');
+
+  let dummyDevice;
+  await test('POST /__smartproxy_api/devices creates HTTPS device', async () => {
+    dummyDevice = await addDevice('Dummy Router', '127.0.0.1:8080', 'https');
+    assert(dummyDevice.id, 'missing id');
+    assert(dummyDevice.protocol === 'https', 'wrong protocol');
+  });
+
+  await test('Proxy returns 200 for registered HTTPS device root', async () => {
+    const res = await request(`${PROXY_BASE}/127.0.0.1:8080/`);
+    assert(res.status === 200, `status ${res.status}`);
+    assertIncludes(res.headers['content-type'], 'text/html');
+    assertIncludes(res.body, 'Welcome to the Dummy Router (HTTPS)');
+  });
+
+  await test('<base> tag is injected into HTTPS HTML', async () => {
+    const res = await request(`${PROXY_BASE}/127.0.0.1:8080/`);
+    assertIncludes(res.body, '<base href="/127.0.0.1:8080/"', 'HTML');
+  });
+
+  await test('Static CSS asset is served by HTTPS proxy', async () => {
+    const res = await request(`${PROXY_BASE}/127.0.0.1:8080/styles.css`);
+    assert(res.status === 200, `status ${res.status}`);
+    assertIncludes(res.headers['content-type'], 'text/css');
+  });
+
+  await test('Static image asset is served by HTTPS proxy', async () => {
+    const res = await request(`${PROXY_BASE}/127.0.0.1:8080/logo.png`);
+    assert(res.status === 200, `status ${res.status}`);
+    assertIncludes(res.headers['content-type'], 'image/png');
+  });
+
+  await test('POST to HTTPS device is proxied', async () => {
+    const res = await request(`${PROXY_BASE}/127.0.0.1:8080/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'username=admin&password=password'
+    });
+    assert(res.status === 200, `status ${res.status}`);
+    assertIncludes(res.body, 'Login Attempt Received');
+  });
+
+  await deleteDevice(dummyDevice.id);
+
   // ── Cleanup ───────────────────────────────────────────────────────────────
   await deleteDevice(createdDevice.id);
 
@@ -660,6 +708,7 @@ async function main() {
 
   if (SPAWN_MODE) {
     deviceServer.kill();
+    dummyRouterServer.kill();
     proxyServer.kill();
   }
 

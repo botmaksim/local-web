@@ -155,7 +155,6 @@ const proxy = createProxyMiddleware({
 
 
         // ── Outgoing WebSocket ─────────────────────────────────────────────
-        // ── Outgoing WebSocket ─────────────────────────────────────────────
         proxyReqWs: (proxyReq, req, socket, options, head) => {
             try {
                 let targetHost = '';
@@ -169,11 +168,8 @@ const proxy = createProxyMiddleware({
                     targetHost = options.target.hostname;
                     targetProto = (options.target.protocol || 'http:').replace(':', '');
                 } else {
-                    console.log('[WS DEBUG] Cannot parse options.target:', options.target);
                     return;
                 }
-                
-                console.log(`[WS DEBUG] Upgrade request for: ${req.url}, resolved target: ${targetProto}://${targetHost}`);
                 
                 const headersToStrip = [
                     'x-forwarded-for',
@@ -186,17 +182,11 @@ const proxy = createProxyMiddleware({
                 ];
                 headersToStrip.forEach(h => proxyReq.removeHeader(h));
 
-                if (targetHost === '127.0.0.1' || targetHost === 'localhost') {
-                    console.log(`[WS DEBUG] Target is localhost, aborting header rewrite`);
-                    return;
-                }
-
                 const targetBase = `${targetProto}://${targetHost}`;
                 proxyReq.setHeader('host', targetHost);
                 if (proxyReq.getHeader('origin')) {
                     proxyReq.setHeader('origin', targetBase);
                 }
-                console.log(`[WS DEBUG] Successfully rewrote WS headers for ${targetHost}`);
             } catch (err) {
                 console.error('[WS ERROR]', err);
             }
@@ -419,7 +409,6 @@ function proxyRouter(req, res, next) {
     }
 
     if (refIp && isValidIp(refIp) && devices.some(d => d.ip === refIp)) {
-        // Allow explicit navigation to the proxy dashboard
         // Allow explicit navigation to the proxy dashboard and its assets
         if (req.method === 'GET') {
             if (req.path === '/') return next();
