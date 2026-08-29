@@ -227,7 +227,7 @@ const proxy = createProxyMiddleware({
             const deviceCookies = headers['set-cookie']
                 ? rewriteCookies(headers['set-cookie'], targetIp)
                 : [];
-            const spCookie = `sp_active_device=${targetIp}; Path=/; Max-Age=60; SameSite=Lax`;
+            const spCookie = `sp_active_device=${targetIp}; Path=/; Max-Age=2592000; SameSite=Lax`;
             headers['set-cookie'] = [...deviceCookies, spCookie];
 
             // Pass binary / non-text responses straight through
