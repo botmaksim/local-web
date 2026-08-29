@@ -241,6 +241,9 @@ const proxy = createProxyMiddleware({
             }
 
             if (!isText) {
+                // Node's http client automatically de-chunks the response.
+                // We MUST strip transfer-encoding so we don't send invalid chunked framing!
+                delete headers['transfer-encoding'];
                 res.writeHead(proxyRes.statusCode, headers);
                 proxyRes.pipe(res);
                 return;
