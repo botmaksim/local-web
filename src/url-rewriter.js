@@ -251,13 +251,78 @@ function rewriteHtml(html, targetIp, originalUrl = '') {
         basePath = urlPath.substring(0, urlPath.lastIndexOf('/') + 1);
     }
 
+    // Intercept client-side routing and API calls
+    const interceptorScript = `
+    <script>
+    (function() {
+        const prefix = '/${targetIp}';
+        const proxyOrigin = window.location.origin;
+        const targetOrigin = 'http://' + '${targetIp}';
+
+        function rewriteUrl(url) {
+            if (!url) return url;
+            try {
+                if (typeof url === 'string' && url.startsWith('/') && !url.startsWith(prefix)) {
+                    return prefix + url;
+                }
+                const u = new URL(url, window.location.href);
+                if (u.origin === targetOrigin || u.host === '${targetIp}') {
+                    u.host = window.location.host;
+                    u.protocol = window.location.protocol;
+                    if (!u.pathname.startsWith(prefix)) {
+                        u.pathname = prefix + (u.pathname === '/' ? '' : u.pathname);
+                    }
+                    return u.href;
+                }
+                if (u.origin === proxyOrigin && !u.pathname.startsWith(prefix) && !u.pathname.startsWith('/__smartproxy')) {
+                    u.pathname = prefix + u.pathname;
+                    return u.href;
+                }
+            } catch (e) {}
+            return url;
+        }
+
+        const originalPushState = history.pushState;
+        history.pushState = function(state, title, url) {
+            return originalPushState.apply(this, [state, title, rewriteUrl(url)]);
+        };
+
+        const originalReplaceState = history.replaceState;
+        history.replaceState = function(state, title, url) {
+            return originalReplaceState.apply(this, [state, title, rewriteUrl(url)]);
+        };
+
+        const originalFetch = window.fetch;
+        window.fetch = function() {
+            if (arguments[0]) arguments[0] = rewriteUrl(arguments[0]);
+            return originalFetch.apply(this, arguments);
+        };
+
+        const originalOpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function() {
+            if (arguments[1]) arguments[1] = rewriteUrl(arguments[1]);
+            return originalOpen.apply(this, arguments);
+        };
+        
+        // Also intercept ServiceWorker registration if any
+        if (navigator.serviceWorker) {
+            const originalRegister = navigator.serviceWorker.register;
+            navigator.serviceWorker.register = function(url, options) {
+                return originalRegister.call(this, rewriteUrl(url), options);
+            };
+        }
+    })();
+    </script>
+    `;
+
     // Overwrite existing <base> or inject one at the top of <head>
     if ($('base').length > 0) {
         $('base').attr('href', basePath);
+        $('base').after(interceptorScript);
     } else {
         const baseTag = `<base href="${basePath}">`;
-        if ($('head').length > 0) $('head').prepend(baseTag);
-        else $.root().prepend(`<head>${baseTag}</head>`);
+        if ($('head').length > 0) $('head').prepend(baseTag + interceptorScript);
+        else $.root().prepend(`<head>${baseTag}${interceptorScript}</head>`);
     }
 
     const rewrite = val => {
