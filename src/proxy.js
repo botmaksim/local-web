@@ -145,6 +145,33 @@ const proxy = createProxyMiddleware({
             }
         },
 
+
+        // ── Outgoing WebSocket ─────────────────────────────────────────────
+        proxyReqWs: (proxyReq, req, socket, options, head) => {
+            const headersToStrip = [
+                'x-forwarded-for',
+                'x-forwarded-host',
+                'x-forwarded-proto',
+                'cf-connecting-ip',
+                'cf-visitor',
+                'cf-ray',
+                'cf-ipcountry',
+            ];
+            headersToStrip.forEach(h => proxyReq.removeHeader(h));
+
+            const { extractTargetFromUrl, getDevices } = require('./devices');
+            const target = extractTargetFromUrl(req.url, getDevices());
+            if (!target) return;
+
+            const { ip: targetIp, protocol: targetProtocol } = target;
+            const targetBase = `${targetProtocol}://${targetIp}`;
+
+            proxyReq.setHeader('host', targetIp);
+            if (proxyReq.getHeader('origin')) {
+                proxyReq.setHeader('origin', targetBase);
+            }
+        },
+
         // ── Incoming response ───────────────────────────────────────────────
         proxyRes: (proxyRes, req, res) => {
             const target = extractTargetFromUrl(req.originalUrl, getDevices());
