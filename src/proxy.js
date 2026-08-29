@@ -138,7 +138,7 @@ const proxy = createProxyMiddleware({
                     const { escapeRegex } = require('./url-rewriter');
                     const url     = new URL(proxyReq.getHeader('referer'));
                     const refPath = url.pathname.replace(new RegExp(`^/${escapeRegex(targetIp)}`), '') || '/';
-                    proxyReq.setHeader('referer', `${targetBase}${refPath}`);
+                    proxyReq.setHeader('referer', `${targetBase}${refPath}${url.search}`);
                 } catch {
                     proxyReq.setHeader('referer', `${targetBase}/`);
                 }
@@ -273,7 +273,15 @@ function proxyRouter(req, res, next) {
 
             return parser(req, res, () => {
                 // Rewrite URLs inside the raw body buffer (e.g. HA OAuth client_id)
-                const target    = extractTargetFromUrl(req.originalUrl, getDevices());
+                let target = extractTargetFromUrl(req.originalUrl || req.url, getDevices());
+                if (!target && req.cookies && req.cookies.sp_active_device) {
+                    target = getDevices().find(d => d.ip === req.cookies.sp_active_device);
+                }
+                if (!target && req.headers.referer) {
+                    const match = req.headers.referer.match(/https?:\/\/[^\/]+\/([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(:[0-9]+)?)/);
+                    if (match) target = getDevices().find(d => d.ip === match[1]);
+                }
+
                 let bodyBuf     = req._rawBody || Buffer.alloc(0);
                 if (target && bodyBuf.length > 0) {
                     const pb = proxyBaseUrl(req, target.ip);
@@ -281,6 +289,7 @@ function proxyRouter(req, res, next) {
                     const po = proxyBaseUrl(req, '').replace(/\/$/, ''); // https://proxy.example.com
                     try {
                         const strBody = bodyBuf.toString('utf8');
+
                         let rewrittenStr = strBody;
                         if (ct.includes('json')) {
                             const parsed    = JSON.parse(strBody);
@@ -290,6 +299,11 @@ function proxyRouter(req, res, next) {
                             // URL-encoded or multipart/form-data string replacement
                             rewrittenStr = rewriteRequestPath(strBody, pb, tb, po);
                         }
+                        
+                        if (req.originalUrl.includes('/auth/token') || req.originalUrl.includes('/auth/login_flow')) {
+                            console.log(`[DEBUG] ${req.method} ${req.originalUrl} -> rewritten body:`, rewrittenStr.substring(0, 500));
+                        }
+
                         bodyBuf = Buffer.from(rewrittenStr, 'utf8');
                     } catch { /* leave as-is */ }
                 }
