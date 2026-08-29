@@ -260,7 +260,9 @@ function proxyRouter(req, res, next) {
             ct.includes('application/json') || 
             ct.includes('+json') || 
             ct.includes('application/x-www-form-urlencoded') ||
-            ct.includes('multipart/form-data')
+            ct.includes('multipart/form-data') ||
+            req.originalUrl.includes('/auth/login_flow') ||
+            req.originalUrl.includes('/auth/token')
         ) {
             let parser;
             if (ct.includes('json')) {
