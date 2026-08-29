@@ -11,8 +11,8 @@
  *       - If a cookie/referer tells us the device, we prepend the IP and pass to `proxy`.
  *       - Otherwise, we call next() so Express can serve the SPA frontend.
  *
- *   2.  HPM proxy's `router` reads `req.spTarget` (set by proxyRouter) and
- *       returns the upstream URL. It never does its own target detection.
+ *   2.  HPM proxy's `router` reads `req.spTarget` (set by proxyRouter) or
+ *       resolves target from URL / Referer / Cookie for WebSocket upgrades.
  *
  *   3.  pathRewrite strips the leading /{ip} from the URL before forwarding.
  *
@@ -28,6 +28,7 @@ const { PassThrough }          = require('node:stream');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const { getDevices, extractTargetFromUrl, isValidIp } = require('./devices');
 const {
+    escapeRegex,
     proxyBaseUrl,
     replaceAbsoluteUrls,
     rewriteRequestPath,
@@ -58,27 +59,76 @@ const STRIP_HEADERS = [
 ];
 
 // ---------------------------------------------------------------------------
+// Device target resolution helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve target device from URL path, Referer/Origin, or session cookie.
+ * Ensures that non-IP paths in Referer do not shadow or block the cookie fallback.
+ *
+ * @param {import('http').IncomingMessage} req
+ * @param {Array<{ip: string, protocol: string}>} devices
+ * @returns {{ip: string, protocol: string} | null}
+ */
+function resolveDevice(req, devices) {
+    if (!devices || !devices.length) return null;
+
+    // 1. Direct URL path: /{ip}/...
+    const url = req.originalUrl || req.url || '';
+    const directTarget = extractTargetFromUrl(url, devices);
+    if (directTarget) return directTarget;
+
+    // 2. Referer / Origin header path: https://domain/{ip}/...
+    const sourceUrl = req.headers.referer || req.headers.origin;
+    if (sourceUrl) {
+        try {
+            const refSegment = new URL(sourceUrl).pathname.split('/').filter(Boolean)[0] || '';
+            if (isValidIp(refSegment)) {
+                const match = devices.find(d => d.ip === refSegment);
+                if (match) return match;
+            }
+        } catch { /* ignore malformed URLs */ }
+    }
+
+    // 3. Session cookie: sp_active_device={ip}
+    let cookieIp = req.cookies?.sp_active_device;
+    if (!cookieIp && req.headers.cookie) {
+        const match = req.headers.cookie.match(/(?:^|;\s*)sp_active_device=([^;]+)/);
+        if (match) cookieIp = match[1];
+    }
+
+    if (cookieIp && isValidIp(cookieIp)) {
+        const match = devices.find(d => d.ip === cookieIp);
+        if (match) return match;
+    }
+
+    return null;
+}
+
+// ---------------------------------------------------------------------------
 // Proxy middleware (HPM)
 // ---------------------------------------------------------------------------
 
 const proxy = createProxyMiddleware({
-    // Real target is always set by proxyRouter via req.spTarget.
-    // This fallback should never be hit in practice.
+    // Target is resolved dynamically via `router`
     target: 'http://127.0.0.1',
 
     router: (req) => {
         if (req.spTarget) {
             return `${req.spTarget.protocol}://${req.spTarget.ip}`;
         }
-        // WebSocket upgrades bypass proxyRouter, so try to resolve the target here.
-        // For WS, req.url has already been set to /{ip}/... by proxyRouter,
-        // but if the WS is a direct /{ip}/path request, use extractTargetFromUrl.
-        const url = req.originalUrl || req.url || '';
-        const target = extractTargetFromUrl(url, getDevices());
+
+        const devices = getDevices();
+        const target = resolveDevice(req, devices);
         if (target) {
             req.spTarget = target;
+            const targetPrefix = `/${target.ip}`;
+            if (!req.url.startsWith(targetPrefix)) {
+                req.url = `${targetPrefix}${req.url}`;
+            }
             return `${target.protocol}://${target.ip}`;
         }
+
         return 'http://127.0.0.1';
     },
 
@@ -87,14 +137,27 @@ const proxy = createProxyMiddleware({
     selfHandleResponse: true,
     ws:                 true,
 
-    pathRewrite: (urlPath) => {
-        // Strip leading /{ip} segment from the URL before forwarding upstream.
+    pathRewrite: (urlPath, req) => {
         if (!urlPath) return '/';
-        const withoutLeadingSlash = urlPath.replace(/^\//, '');
-        const slashIdx = withoutLeadingSlash.indexOf('/');
-        if (slashIdx === -1) return '/';
-        const rest = withoutLeadingSlash.slice(slashIdx);
-        return rest || '/';
+        const target = req.spTarget;
+        let newPath = urlPath;
+
+        if (target) {
+            newPath = newPath.replace(new RegExp(`^/${escapeRegex(target.ip)}(?=[/?#]|$)`), '') || '/';
+            if (!newPath.startsWith('/')) newPath = '/' + newPath;
+
+            const pb = proxyBaseUrl(req, target.ip);
+            const tb = `${target.protocol}://${target.ip}`;
+            const po = proxyBaseUrl(req, '').replace(/\/$/, '');
+            newPath = rewriteRequestPath(newPath, pb, tb, po);
+        } else {
+            const first = urlPath.split('?')[0].split('/').filter(Boolean)[0] || '';
+            if (isValidIp(first)) {
+                newPath = urlPath.replace(new RegExp(`^/${escapeRegex(first)}(?=[/?#]|$)`), '') || '/';
+                if (!newPath.startsWith('/')) newPath = '/' + newPath;
+            }
+        }
+        return newPath;
     },
 
     on: {
@@ -122,7 +185,6 @@ const proxy = createProxyMiddleware({
             }
             if (proxyReq.getHeader('referer')) {
                 try {
-                    const { escapeRegex } = require('./url-rewriter');
                     const u     = new URL(proxyReq.getHeader('referer'));
                     const rPath = u.pathname.replace(new RegExp(`^/${escapeRegex(targetIp)}`), '') || '/';
                     proxyReq.setHeader('referer', `${targetBase}${rPath}${u.search}`);
@@ -136,26 +198,16 @@ const proxy = createProxyMiddleware({
         proxyReqWs: (proxyReq, req, socket, options) => {
             STRIP_HEADERS.forEach(h => proxyReq.removeHeader(h));
 
-            let targetHost  = '';
-            let targetProto = 'http';
-
-            if (options.target) {
-                const t = options.target;
-                if (typeof t === 'string') {
-                    const u = new URL(t);
-                    targetHost  = u.hostname;
-                    targetProto = u.protocol.replace(':', '');
-                } else if (t.hostname) {
-                    targetHost  = t.hostname;
-                    targetProto = (t.protocol || 'http:').replace(':', '');
-                }
-            }
-
-            if (!targetHost || targetHost === '127.0.0.1') {
-                log('WS', `No valid WS target — aborting`);
+            const target = req.spTarget || resolveDevice(req, getDevices());
+            if (!target) {
+                log('WS', 'No valid WS target device found — aborting');
                 socket.destroy();
                 return;
             }
+            req.spTarget = target;
+
+            const targetHost = target.ip;
+            const targetProto = target.protocol || 'http';
 
             proxyReq.setHeader('host', targetHost);
             if (proxyReq.getHeader('origin')) {
@@ -199,9 +251,9 @@ const proxy = createProxyMiddleware({
             // so re-sending it causes protocol violations in the browser.
             delete headers['transfer-encoding'];
 
-            const contentType    = (headers['content-type'] || '').toLowerCase();
+            const contentType     = (headers['content-type'] || '').toLowerCase();
             const contentEncoding = (headers['content-encoding'] || '').toLowerCase();
-            const isCompressed   = contentEncoding && contentEncoding !== 'identity';
+            const isCompressed    = contentEncoding && contentEncoding !== 'identity';
 
             // Only rewrite uncompressed text payloads.
             // Compressed payloads must pass through as binary — attempting to
@@ -315,21 +367,9 @@ function proxyRouter(req, res, next) {
         return proxy(req, res, next);
     }
 
-    // ── Case 2: no IP prefix — check Referer / cookie ───────────────────────
-    let refIp = '';
-
-    const sourceUrl = req.headers.referer || req.headers.origin;
-    if (sourceUrl) {
-        try {
-            refIp = new URL(sourceUrl).pathname.split('/').filter(Boolean)[0] || '';
-        } catch { /* ignore malformed URLs */ }
-    }
-
-    if (!refIp && req.cookies?.sp_active_device) {
-        refIp = req.cookies.sp_active_device;
-    }
-
-    if (refIp && isValidIp(refIp) && devices.some(d => d.ip === refIp)) {
+    // ── Case 2: no IP prefix — check Referer / cookie via resolveDevice ──────
+    const device = resolveDevice(req, devices);
+    if (device) {
         // Let the SPA handle the root dashboard and its own static files.
         if (req.method === 'GET') {
             if (req.path === '/') return next();
@@ -338,9 +378,8 @@ function proxyRouter(req, res, next) {
         }
 
         // Route to the device: prepend /{ip} so pathRewrite can strip it.
-        const device = devices.find(d => d.ip === refIp);
         req.spTarget = device;
-        req.url = `/${refIp}${req.url}`;
+        req.url = `/${device.ip}${req.url}`;
         return proxy(req, res, next);
     }
 
