@@ -46,7 +46,10 @@ const proxy = createProxyMiddleware({
     router: (req) => {
         const url = req.originalUrl || req.url || '';
         let target = extractTargetFromUrl(url, getDevices());
-        if (target) return `${target.protocol}://${target.ip}`;
+        if (target) {
+            req.spTarget = target;
+            return `${target.protocol}://${target.ip}`;
+        }
         
         // Handle WebSocket upgrades which bypass Express middleware
         // Try to get target from Referer or Cookie
@@ -73,6 +76,7 @@ const proxy = createProxyMiddleware({
                     return undefined; // Let express handle it
                 }
                 
+                req.spTarget = dev;
                 // Prepend refIp to req.url so pathRewrite strips it properly
                 req.url = `/${refIp}${req.url}`;
                 return `${dev.protocol}://${dev.ip}`;
@@ -95,7 +99,7 @@ const proxy = createProxyMiddleware({
         let newPath   = urlPath.slice(segment.length + 1) || '/';
         if (!newPath.startsWith('/')) newPath = '/' + newPath;
 
-        const target = extractTargetFromUrl(req.originalUrl || req.url, getDevices());
+        const target = req.spTarget;
         if (target) {
             const pb = proxyBaseUrl(req, target.ip);
             const tb = `${target.protocol}://${target.ip}`;
@@ -123,7 +127,7 @@ const proxy = createProxyMiddleware({
             ];
             headersToStrip.forEach(h => proxyReq.removeHeader(h));
 
-            const target = extractTargetFromUrl(req.originalUrl, getDevices());
+            const target = req.spTarget;
             if (!target) return;
 
             const { ip: targetIp, protocol: targetProtocol } = target;
@@ -194,8 +198,9 @@ const proxy = createProxyMiddleware({
 
         // ── Incoming response ───────────────────────────────────────────────
         proxyRes: (proxyRes, req, res) => {
-            const target = extractTargetFromUrl(req.originalUrl, getDevices());
+            const target = req.spTarget;
             if (!target) {
+                res.writeHead(proxyRes.statusCode, proxyRes.headers);
                 proxyRes.pipe(res);
                 return;
             }
