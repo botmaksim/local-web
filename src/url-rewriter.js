@@ -245,14 +245,13 @@ function rewriteLocationHeader(loc, targetIp, targetProto, proxyBase) {
 function rewriteCookies(setCookie, targetIp) {
     const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
     return cookies.map(c => {
+        // Strip the device's own Domain so the cookie is scoped to the proxy domain.
         let rc = c.replace(/Domain=[^;]+;?\s*/gi, '');
-        rc = rc.replace(/Path=([^;]+)(;?\s*)/gi, (_m, p) => {
-            let np = p.trim().replace(/\/$/, '');
-            if (np === '' || np === '/') np = `/${targetIp}`;
-            else if (np.startsWith('/') && !np.startsWith(`/${targetIp}`)) np = `/${targetIp}${np}`;
-            return `Path=${np}; `;
-        });
-        if (!/Path=/i.test(rc)) rc += `; Path=/${targetIp}`;
+        // Reset Path to / — the cookie must be sent with ALL requests to the proxy,
+        // not just those under /{ip}/. (HA auth tokens, for example, are sent to
+        // /auth/token which in our proxy becomes /{ip}/auth/token.)
+        rc = rc.replace(/Path=[^;]+(;?\s*)/gi, 'Path=/; ');
+        if (!/Path=/i.test(rc)) rc += '; Path=/';
         return rc.trim();
     });
 }
