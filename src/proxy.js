@@ -44,9 +44,34 @@ const proxy = createProxyMiddleware({
     target: 'http://127.0.0.1',
 
     router: (req) => {
-        const target = extractTargetFromUrl(req.originalUrl, getDevices());
-        if (!target) return 'http://127.0.0.1';
-        return `${target.protocol}://${target.ip}`;
+        const url = req.originalUrl || req.url || '';
+        let target = extractTargetFromUrl(url, getDevices());
+        if (target) return `${target.protocol}://${target.ip}`;
+        
+        // Handle WebSocket upgrades which bypass Express middleware
+        // Try to get target from Referer or Cookie
+        let refIp = '';
+        const sourceUrl = req.headers.referer || req.headers.origin;
+        if (sourceUrl) {
+            try {
+                refIp = new URL(sourceUrl).pathname.split('/').filter(Boolean)[0] || '';
+            } catch { /* ignore */ }
+        } else if (req.headers.cookie && req.headers.cookie.includes('sp_active_device=')) {
+            const match = req.headers.cookie.match(/sp_active_device=([^;]+)/);
+            if (match) refIp = match[1];
+        }
+        
+        if (refIp) {
+            const devices = getDevices();
+            const dev = devices.find(d => d.ip === refIp);
+            if (dev) {
+                // Prepend refIp to req.url so pathRewrite strips it properly
+                req.url = `/${refIp}${req.url}`;
+                return `${dev.protocol}://${dev.ip}`;
+            }
+        }
+        
+        return 'http://127.0.0.1';
     },
 
     secure:            false,
@@ -56,6 +81,7 @@ const proxy = createProxyMiddleware({
 
     // Strip the /{ip} prefix before forwarding to the upstream server
     pathRewrite: (urlPath) => {
+        if (!urlPath) return '/';
         const segment = urlPath.split('/').filter(Boolean)[0] || '';
         let newPath   = urlPath.slice(segment.length + 1) || '/';
         if (!newPath.startsWith('/')) newPath = '/' + newPath;
@@ -173,9 +199,12 @@ const proxy = createProxyMiddleware({
 
         // ── Error handling ──────────────────────────────────────────────────
         error: (err, req, res) => {
-            log('ERROR', `Proxy error for ${req.originalUrl}:`, err.message);
-            if (!res.headersSent) {
-                res.status(502).json({ error: 'Bad Gateway', message: err.message });
+            const url = req.originalUrl || req.url || '';
+            log('ERROR', `Proxy error for ${url}:`, err.message);
+            if (res.status && typeof res.status === 'function') {
+                if (!res.headersSent) res.status(502).json({ error: 'Bad Gateway', message: err.message });
+            } else if (res.writable) {
+                res.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
             }
         },
     },
@@ -218,10 +247,20 @@ function proxyRouter(req, res, next) {
         // Solution: capture the raw bytes with verify(), rewrite URLs in them,
         // then rebuild req as a Readable so HPM pipes the correct data.
         const ct = (req.headers['content-type'] || '').toLowerCase();
-        if (ct.includes('application/json') || ct.includes('+json') || ct.includes('application/x-www-form-urlencoded')) {
-            const parser = ct.includes('json') 
-                ? express.json({ verify: (req, _res, buf) => { req._rawBody = buf; } })
-                : express.urlencoded({ extended: true, verify: (req, _res, buf) => { req._rawBody = buf; } });
+        if (
+            ct.includes('application/json') || 
+            ct.includes('+json') || 
+            ct.includes('application/x-www-form-urlencoded') ||
+            ct.includes('multipart/form-data')
+        ) {
+            let parser;
+            if (ct.includes('json')) {
+                parser = express.json({ verify: (req, _res, buf) => { req._rawBody = buf; } });
+            } else if (ct.includes('application/x-www-form-urlencoded')) {
+                parser = express.urlencoded({ extended: true, verify: (req, _res, buf) => { req._rawBody = buf; } });
+            } else {
+                parser = express.raw({ type: () => true, limit: '50mb', verify: (req, _res, buf) => { req._rawBody = buf; } });
+            }
 
             return parser(req, res, () => {
                 // Rewrite URLs inside the raw body buffer (e.g. HA OAuth client_id)
@@ -239,7 +278,7 @@ function proxyRouter(req, res, next) {
                             const rewritten = rewriteRequestBody(parsed, pb, tb, po);
                             rewrittenStr = JSON.stringify(rewritten);
                         } else {
-                            // URL-encoded string replacement
+                            // URL-encoded or multipart/form-data string replacement
                             rewrittenStr = rewriteRequestPath(strBody, pb, tb, po);
                         }
                         bodyBuf = Buffer.from(rewrittenStr, 'utf8');
