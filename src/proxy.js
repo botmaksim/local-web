@@ -147,28 +147,38 @@ const proxy = createProxyMiddleware({
 
 
         // ── Outgoing WebSocket ─────────────────────────────────────────────
+        // ── Outgoing WebSocket ─────────────────────────────────────────────
         proxyReqWs: (proxyReq, req, socket, options, head) => {
-            const headersToStrip = [
-                'x-forwarded-for',
-                'x-forwarded-host',
-                'x-forwarded-proto',
-                'cf-connecting-ip',
-                'cf-visitor',
-                'cf-ray',
-                'cf-ipcountry',
-            ];
-            headersToStrip.forEach(h => proxyReq.removeHeader(h));
+            try {
+                console.log(`[WS DEBUG] Upgrade request for: ${req.url}`);
+                const headersToStrip = [
+                    'x-forwarded-for',
+                    'x-forwarded-host',
+                    'x-forwarded-proto',
+                    'cf-connecting-ip',
+                    'cf-visitor',
+                    'cf-ray',
+                    'cf-ipcountry',
+                ];
+                headersToStrip.forEach(h => proxyReq.removeHeader(h));
 
-            const { extractTargetFromUrl, getDevices } = require('./devices');
-            const target = extractTargetFromUrl(req.url, getDevices());
-            if (!target) return;
+                const { extractTargetFromUrl, getDevices } = require('./devices');
+                const target = extractTargetFromUrl(req.url, getDevices());
+                if (!target) {
+                    console.log(`[WS DEBUG] Target not found for: ${req.url}`);
+                    return;
+                }
 
-            const { ip: targetIp, protocol: targetProtocol } = target;
-            const targetBase = `${targetProtocol}://${targetIp}`;
+                const { ip: targetIp, protocol: targetProtocol } = target;
+                const targetBase = `${targetProtocol}://${targetIp}`;
 
-            proxyReq.setHeader('host', targetIp);
-            if (proxyReq.getHeader('origin')) {
-                proxyReq.setHeader('origin', targetBase);
+                proxyReq.setHeader('host', targetIp);
+                if (proxyReq.getHeader('origin')) {
+                    proxyReq.setHeader('origin', targetBase);
+                }
+                console.log(`[WS DEBUG] Successfully rewrote WS headers for ${targetIp}`);
+            } catch (err) {
+                console.error('[WS ERROR]', err);
             }
         },
 
