@@ -232,9 +232,13 @@ const proxy = createProxyMiddleware({
 
             // Pass binary / non-text responses straight through
             const contentType = (headers['content-type'] || '').toLowerCase();
-            const isText = contentType.includes('text/html')   ||
-                           contentType.includes('javascript')  ||
-                           contentType.includes('json');
+            let isText = contentType.includes('text/html')   ||
+                         contentType.includes('javascript')  ||
+                         contentType.includes('json');
+                         
+            if (headers['content-encoding'] && headers['content-encoding'] !== 'identity') {
+                isText = false; // Do not corrupt compressed binary payloads
+            }
 
             if (!isText) {
                 res.writeHead(proxyRes.statusCode, headers);
