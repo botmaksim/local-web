@@ -301,11 +301,16 @@ function proxyRouter(req, res, next) {
                         }
                         
                         if (req.originalUrl.includes('/auth/token') || req.originalUrl.includes('/auth/login_flow')) {
-                            console.log(`[DEBUG] ${req.method} ${req.originalUrl} -> rewritten body:`, rewrittenStr.substring(0, 500));
+                            const logLine = "[DEBUG] " + req.method + " " + req.originalUrl + " -> rewritten body:\\n" + rewrittenStr.substring(0, 500) + "\\n==========================\\n";
+                            console.log(logLine);
+                            require('fs').appendFileSync('auth_debug.log', logLine);
                         }
 
                         bodyBuf = Buffer.from(rewrittenStr, 'utf8');
-                    } catch { /* leave as-is */ }
+                    } catch (e) {
+                        console.error("[DEBUG] BODY REWRITE ERROR:", e);
+                        require('fs').appendFileSync('auth_debug.log', "\\n[DEBUG] ERROR in rewrite: " + String(e) + "\\n");
+                    }
                 }
 
                 // httpxy does: (options.buffer || req).pipe(proxyReq)
