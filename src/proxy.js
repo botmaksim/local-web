@@ -324,10 +324,9 @@ function proxyRouter(req, res, next) {
     }
 
     if (refIp && isValidIp(refIp) && devices.some(d => d.ip === refIp)) {
-        // Top-level HTML navigation to root → redirect to device root
+        // Allow explicit navigation to the proxy dashboard
         if (req.path === '/' && req.method === 'GET') {
-            const accept = req.headers.accept || '';
-            if (accept.includes('text/html')) return res.redirect(`/${refIp}/`);
+            return next();
         }
 
         if (!req.originalUrl.startsWith(`/${refIp}`)) {
