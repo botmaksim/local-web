@@ -60,8 +60,16 @@ function rewriteBase64State(text, fromUrl, toUrl) {
         try {
             const decoded = Buffer.from(decodeURIComponent(b64), 'base64').toString('utf8');
             if (!decoded.includes(fromUrl)) return match;
-            const rewritten = decoded.replace(new RegExp(escapeRegex(fromUrl), 'g'), toUrl);
-            return 'state=' + encodeURIComponent(Buffer.from(rewritten).toString('base64'));
+            
+            let regexStr = escapeRegex(fromUrl);
+            if (!fromUrl.startsWith('http')) {
+                regexStr = `https?://${regexStr}(:[0-9]+)?`;
+            }
+            const regex = new RegExp(regexStr, 'g');
+            
+            const rewritten = decoded.replace(regex, toUrl);
+            const rewrittenFallback = rewritten.replace(new RegExp(escapeRegex(fromUrl), 'g'), toUrl);
+            return 'state=' + encodeURIComponent(Buffer.from(rewrittenFallback).toString('base64'));
         } catch {
             return match;
         }
@@ -134,7 +142,7 @@ function rewriteRequestPath(urlPath, proxyBase, targetBase, proxyOrigin = '') {
     // Plain
     out = out.replace(new RegExp(escapeRegex(proxyBase), 'g'), targetBase);
     if (proxyOrigin) {
-        out = out.replace(new RegExp(escapeRegex(proxyOrigin) + '(?=[/&?=]|$)', 'g'), targetBase);
+        out = out.replace(new RegExp(escapeRegex(proxyOrigin) + '(?=[/&?=\\r\\n"\' ]|$)', 'g'), targetBase);
     }
 
     // URL-encoded
@@ -216,7 +224,7 @@ function rewriteLocationHeader(loc, targetIp, targetProto, proxyBase) {
     );
 
     // Base64 state
-    loc = rewriteBase64State(loc, targetIp, proxyBase);
+    loc = rewriteBase64State(loc, `${targetProto}://${targetIp}`, proxyBase);
 
     return loc;
 }

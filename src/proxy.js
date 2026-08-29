@@ -80,11 +80,20 @@ const proxy = createProxyMiddleware({
     ws:                true,
 
     // Strip the /{ip} prefix before forwarding to the upstream server
-    pathRewrite: (urlPath) => {
+    // Also rewrite URLs in query strings (e.g. OAuth client_id/redirect_uri)
+    pathRewrite: (urlPath, req) => {
         if (!urlPath) return '/';
         const segment = urlPath.split('/').filter(Boolean)[0] || '';
         let newPath   = urlPath.slice(segment.length + 1) || '/';
         if (!newPath.startsWith('/')) newPath = '/' + newPath;
+
+        const target = extractTargetFromUrl(req.originalUrl || req.url, getDevices());
+        if (target) {
+            const pb = proxyBaseUrl(req, target.ip);
+            const tb = `${target.protocol}://${target.ip}`;
+            const po = proxyBaseUrl(req, '').replace(/\/$/, '');
+            newPath = rewriteRequestPath(newPath, pb, tb, po);
+        }
         return newPath;
     },
 
