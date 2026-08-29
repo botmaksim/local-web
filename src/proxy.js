@@ -56,7 +56,9 @@ const proxy = createProxyMiddleware({
             try {
                 refIp = new URL(sourceUrl).pathname.split('/').filter(Boolean)[0] || '';
             } catch { /* ignore */ }
-        } else if (req.headers.cookie && req.headers.cookie.includes('sp_active_device=')) {
+        }
+        
+        if (!refIp && req.headers.cookie && req.headers.cookie.includes('sp_active_device=')) {
             const match = req.headers.cookie.match(/sp_active_device=([^;]+)/);
             if (match) refIp = match[1];
         }
@@ -391,7 +393,9 @@ function proxyRouter(req, res, next) {
         try {
             refIp = new URL(sourceUrl).pathname.split('/').filter(Boolean)[0] || '';
         } catch { /* ignore malformed URLs */ }
-    } else if (req.cookies?.sp_active_device) {
+    }
+    
+    if (!refIp && req.cookies?.sp_active_device) {
         refIp = req.cookies.sp_active_device;
     }
 
