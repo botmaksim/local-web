@@ -152,7 +152,23 @@ const proxy = createProxyMiddleware({
         // ── Outgoing WebSocket ─────────────────────────────────────────────
         proxyReqWs: (proxyReq, req, socket, options, head) => {
             try {
-                console.log(`[WS DEBUG] Upgrade request for: ${req.url}`);
+                let targetHost = '';
+                let targetProto = '';
+                
+                if (typeof options.target === 'string') {
+                    const u = new URL(options.target);
+                    targetHost = u.hostname;
+                    targetProto = u.protocol.replace(':', '');
+                } else if (options.target && options.target.hostname) {
+                    targetHost = options.target.hostname;
+                    targetProto = (options.target.protocol || 'http:').replace(':', '');
+                } else {
+                    console.log('[WS DEBUG] Cannot parse options.target:', options.target);
+                    return;
+                }
+                
+                console.log(`[WS DEBUG] Upgrade request for: ${req.url}, resolved target: ${targetProto}://${targetHost}`);
+                
                 const headersToStrip = [
                     'x-forwarded-for',
                     'x-forwarded-host',
@@ -164,21 +180,17 @@ const proxy = createProxyMiddleware({
                 ];
                 headersToStrip.forEach(h => proxyReq.removeHeader(h));
 
-                const { extractTargetFromUrl, getDevices } = require('./devices');
-                const target = extractTargetFromUrl(req.url, getDevices());
-                if (!target) {
-                    console.log(`[WS DEBUG] Target not found for: ${req.url}`);
+                if (targetHost === '127.0.0.1' || targetHost === 'localhost') {
+                    console.log(`[WS DEBUG] Target is localhost, aborting header rewrite`);
                     return;
                 }
 
-                const { ip: targetIp, protocol: targetProtocol } = target;
-                const targetBase = `${targetProtocol}://${targetIp}`;
-
-                proxyReq.setHeader('host', targetIp);
+                const targetBase = `${targetProto}://${targetHost}`;
+                proxyReq.setHeader('host', targetHost);
                 if (proxyReq.getHeader('origin')) {
                     proxyReq.setHeader('origin', targetBase);
                 }
-                console.log(`[WS DEBUG] Successfully rewrote WS headers for ${targetIp}`);
+                console.log(`[WS DEBUG] Successfully rewrote WS headers for ${targetHost}`);
             } catch (err) {
                 console.error('[WS ERROR]', err);
             }
