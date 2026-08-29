@@ -130,8 +130,8 @@ async function main() {
 
   if (SPAWN_MODE) {
     console.log('\n[setup] Spawning mock device and proxy servers…');
-    deviceServer = spawn('node', [path.join(__dirname, 'http_device.js')], { stdio: 'inherit' });
-    proxyServer  = spawn('node', [path.join(__dirname, '../server.js')],  { stdio: 'inherit' });
+    deviceServer = spawn('node', [path.join(__dirname, 'http_device.js')], { stdio: 'inherit', env: { ...process.env, ALLOW_LOOPBACK: 'true' } });
+    proxyServer  = spawn('node', [path.join(__dirname, '../server.js')],  { stdio: 'inherit', env: { ...process.env, ALLOW_LOOPBACK: 'true' } });
 
     await Promise.all([
       waitForPort(DEVICE_PORT),
@@ -439,7 +439,9 @@ async function main() {
     assert(res.status === 302, `expected 302, got ${res.status}`);
     const loc = res.headers['location'] || '';
     assertIncludes(loc, `/${DEVICE_IP}/dashboard`, 'Location');
-    assertNotIncludes(loc, 'http://127.0.0.1', 'Location');
+    // The device's own absolute URL (host:port as origin) must be gone.
+    // Note: DEVICE_IP itself appears in the proxy path, so we check the scheme+host form.
+    assertNotIncludes(loc, `http://127.0.0.1:${DEVICE_PORT}`, 'Location must not expose device origin');
   });
 
   await test('302 with query params: Location rewritten + query preserved', async () => {
@@ -493,7 +495,7 @@ async function main() {
     assert(res.status === 201, `expected 201, got ${res.status}`);
     const loc = res.headers['location'] || '';
     assertIncludes(loc, `/${DEVICE_IP}/api/items/42`, 'Location');
-    assertNotIncludes(loc, 'http://127.0.0.1', 'Location');
+    assertNotIncludes(loc, `http://127.0.0.1:${DEVICE_PORT}`, 'Location must not expose device origin');
     const body = JSON.parse(res.body);
     assert(body.url.includes(`/${DEVICE_IP}/`), `url not rewritten: ${body.url}`);
   });
@@ -527,7 +529,7 @@ async function main() {
     const res = await request(`${PROXY_BASE}/${DEVICE_IP}/api/nested`);
     assert(res.status === 200, `status ${res.status}`);
     const body = JSON.parse(res.body);
-    assertNotIncludes(JSON.stringify(body.device), 'http://127.0.0.1', 'endpoints');
+    assertNotIncludes(JSON.stringify(body.device), `http://127.0.0.1:${DEVICE_PORT}`, 'endpoints must not expose device origin');
     assert(body.device.endpoints.status.includes(`/${DEVICE_IP}/`), 'status url not rewritten');
     assert(body.device.endpoints.control.includes(`/${DEVICE_IP}/`), 'control url not rewritten');
     assert(body.device.endpoints.ui.includes(`/${DEVICE_IP}/`), 'ui url not rewritten');
@@ -548,7 +550,7 @@ async function main() {
     for (const user of body) {
       assert(user.profile.includes(`/${DEVICE_IP}/`), `profile url not rewritten: ${user.profile}`);
       assert(user.avatar.includes(`/${DEVICE_IP}/`),  `avatar url not rewritten: ${user.avatar}`);
-      assertNotIncludes(user.profile, 'http://127.0.0.1', 'profile');
+      assertNotIncludes(user.profile, `http://127.0.0.1:${DEVICE_PORT}`, 'profile must not expose device origin');
     }
   });
 
@@ -617,7 +619,7 @@ async function main() {
 
   await test('<link rel="canonical"> href rewritten', async () => {
     const res = await request(`${PROXY_BASE}/${DEVICE_IP}/page/with-canonical`);
-    assertNotIncludes(res.body, 'http://127.0.0.1', 'absolute URL in canonical');
+    assertNotIncludes(res.body, `http://127.0.0.1:${DEVICE_PORT}`, 'canonical must not expose device origin');
     assertIncludes(res.body, `/${DEVICE_IP}/page/with-canonical`, 'canonical href');
   });
 

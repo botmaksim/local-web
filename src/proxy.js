@@ -1,0 +1,293 @@
+'use strict';
+
+/**
+ * src/proxy.js
+ *
+ * Reverse-proxy middleware built on http-proxy-middleware.
+ *
+ * Key responsibilities:
+ *   onProxyReq  – strip proxy-added / CDN headers that confuse upstream servers
+ *                 (e.g. Home Assistant rejects requests with X-Forwarded-* unless
+ *                 the sender is in its `trusted_proxies` list); rewrite the
+ *                 outgoing path and JSON body so the upstream receives its own
+ *                 URLs back (required for OAuth client_id / redirect_uri checks).
+ *
+ *   onProxyRes  – rewrite Location headers, Set-Cookie paths, and response
+ *                 bodies (HTML / JS / JSON) so that every reference to the
+ *                 device's own origin is replaced by the external proxy URL.
+ *
+ *   onError     – return a clean 502 instead of crashing.
+ */
+
+const express = require('express');
+const { createProxyMiddleware } = require('http-proxy-middleware');
+const { getDevices, extractTargetFromUrl, isValidIp } = require('./devices');
+const {
+    proxyBaseUrl,
+    replaceAbsoluteUrls,
+    rewriteRequestPath,
+    rewriteRequestBody,
+    rewriteLocationHeader,
+    rewriteCookies,
+    rewriteHtml,
+} = require('./url-rewriter');
+
+const log = (level, msg, extra = '') =>
+    console.log(`[${new Date().toISOString()}] [${level}] ${msg}${extra ? ' ' + extra : ''}`);
+
+// ---------------------------------------------------------------------------
+// Proxy middleware
+// ---------------------------------------------------------------------------
+
+const proxy = createProxyMiddleware({
+    // Fallback target — overridden dynamically by `router`
+    target: 'http://127.0.0.1',
+
+    router: (req) => {
+        const target = extractTargetFromUrl(req.originalUrl, getDevices());
+        if (!target) return 'http://127.0.0.1';
+        return `${target.protocol}://${target.ip}`;
+    },
+
+    secure:            false,
+    changeOrigin:      true,
+    selfHandleResponse: true,
+    ws:                true,
+
+    // Strip the /{ip} prefix before forwarding to the upstream server
+    pathRewrite: (urlPath) => {
+        const segment = urlPath.split('/').filter(Boolean)[0] || '';
+        let newPath   = urlPath.slice(segment.length + 1) || '/';
+        if (!newPath.startsWith('/')) newPath = '/' + newPath;
+        return newPath;
+    },
+
+    on: {
+        // ── Outgoing request ────────────────────────────────────────────────
+        proxyReq: (proxyReq, req) => {
+            // Remove headers that could confuse upstream servers.
+            // Home Assistant (and many IoT devices) reject requests that include
+            // X-Forwarded-* unless the proxying IP is explicitly trusted.
+            const headersToStrip = [
+                'accept-encoding',   // We read the body ourselves — no compression
+                'x-forwarded-for',
+                'x-forwarded-host',
+                'x-forwarded-proto',
+                'cf-connecting-ip',
+                'cf-visitor',
+                'cf-ray',
+                'cf-ipcountry',
+            ];
+            headersToStrip.forEach(h => proxyReq.removeHeader(h));
+
+            const target = extractTargetFromUrl(req.originalUrl, getDevices());
+            if (!target) return;
+
+            const { ip: targetIp, protocol: targetProtocol } = target;
+            const targetBase = `${targetProtocol}://${targetIp}`;
+            const proxyBase  = proxyBaseUrl(req, targetIp);
+
+            // Set Host to the upstream's own IP so its virtual-host routing works
+            proxyReq.setHeader('host', targetIp);
+
+            // Rewrite path: restore external proxy URL → internal target URL
+            // (e.g. OAuth redirect_uri / client_id values)
+            proxyReq.path = rewriteRequestPath(proxyReq.path, proxyBase, targetBase);
+
+
+            // Rewrite Origin / Referer so CSRF checks pass
+            if (proxyReq.getHeader('origin')) {
+                proxyReq.setHeader('origin', targetBase);
+            }
+            if (proxyReq.getHeader('referer')) {
+                try {
+                    const { escapeRegex } = require('./url-rewriter');
+                    const url     = new URL(proxyReq.getHeader('referer'));
+                    const refPath = url.pathname.replace(new RegExp(`^/${escapeRegex(targetIp)}`), '') || '/';
+                    proxyReq.setHeader('referer', `${targetBase}${refPath}`);
+                } catch {
+                    proxyReq.setHeader('referer', `${targetBase}/`);
+                }
+            }
+        },
+
+        // ── Incoming response ───────────────────────────────────────────────
+        proxyRes: (proxyRes, req, res) => {
+            const target = extractTargetFromUrl(req.originalUrl, getDevices());
+            if (!target) {
+                proxyRes.pipe(res);
+                return;
+            }
+            const { ip: targetIp, protocol: targetProtocol } = target;
+            const proxyBase = proxyBaseUrl(req, targetIp);
+
+            log('PROXY', `${req.method} ${req.originalUrl} → ${proxyRes.statusCode}`);
+
+            const headers = { ...proxyRes.headers };
+
+            // Rewrite Location header
+            if (headers['location']) {
+                headers['location'] = rewriteLocationHeader(
+                    headers['location'], targetIp, targetProtocol, proxyBase
+                );
+            }
+
+            // Rewrite Set-Cookie + append context tracking cookie
+            const deviceCookies = headers['set-cookie']
+                ? rewriteCookies(headers['set-cookie'], targetIp)
+                : [];
+            const spCookie = `sp_active_device=${targetIp}; Path=/; Max-Age=60; SameSite=Lax`;
+            headers['set-cookie'] = [...deviceCookies, spCookie];
+
+            // Pass binary / non-text responses straight through
+            const contentType = (headers['content-type'] || '').toLowerCase();
+            const isText = contentType.includes('text/html')   ||
+                           contentType.includes('javascript')  ||
+                           contentType.includes('json');
+
+            if (!isText) {
+                res.writeHead(proxyRes.statusCode, headers);
+                proxyRes.pipe(res);
+                return;
+            }
+
+            // Buffer and rewrite the text body
+            const chunks = [];
+            proxyRes.on('data', chunk => chunks.push(chunk));
+            proxyRes.on('end', () => {
+                let body = Buffer.concat(chunks).toString('utf8');
+
+                body = replaceAbsoluteUrls(body, targetIp, req);
+
+                if (contentType.includes('text/html')) {
+                    body = rewriteHtml(body, targetIp, req.originalUrl);
+                }
+
+                const rewritten = Buffer.from(body, 'utf8');
+                headers['content-length'] = String(rewritten.length);
+                delete headers['transfer-encoding'];
+
+                res.writeHead(proxyRes.statusCode, headers);
+                res.end(rewritten);
+            });
+        },
+
+        // ── Error handling ──────────────────────────────────────────────────
+        error: (err, req, res) => {
+            log('ERROR', `Proxy error for ${req.originalUrl}:`, err.message);
+            if (!res.headersSent) {
+                res.status(502).json({ error: 'Bad Gateway', message: err.message });
+            }
+        },
+    },
+});
+
+// ---------------------------------------------------------------------------
+// Routing middleware
+// ---------------------------------------------------------------------------
+
+/**
+ * Express middleware that decides whether a request should be proxied.
+ *
+ * Routing priority:
+ *   1. Requests starting with /{registeredIp} → proxy directly.
+ *   2. Requests whose Referer / cookie indicate a device context
+ *      → 307 redirect to add the IP prefix (preserves POST bodies).
+ *   3. Everything else → pass through to the SPA fallback.
+ *
+ * @param {import('express').Request}  req
+ * @param {import('express').Response} res
+ * @param {import('express').NextFunction} next
+ */
+function proxyRouter(req, res, next) {
+    if (req.path.startsWith('/__smartproxy_api/')) return next();
+
+    const devices       = getDevices();
+    const firstSegment  = req.path.split('/').filter(Boolean)[0] || '';
+
+    // Direct proxy: /192.168.x.x/…
+    if (isValidIp(firstSegment)) {
+        if (!devices.some(d => d.ip === firstSegment)) {
+            return res.status(403).json({ error: 'Forbidden: device not registered' });
+        }
+        // For JSON requests, parse the body so we can rewrite proxy URLs in it
+        // (e.g. Home Assistant login_flow client_id / redirect_uri).
+        //
+        // Problem: express.json() consumes the req stream. HPM then tries to
+        // req.pipe(proxyReq) and gets an empty stream → upstream gets no body.
+        //
+        // Solution: capture the raw bytes with verify(), rewrite URLs in them,
+        // then rebuild req as a Readable so HPM pipes the correct data.
+        const ct = (req.headers['content-type'] || '').toLowerCase();
+        if (ct.includes('application/json') || ct.includes('+json')) {
+            return express.json({
+                verify: (req, _res, buf) => { req._rawBody = buf; },
+            })(req, res, () => {
+                // Rewrite URLs inside the raw body buffer (e.g. HA OAuth client_id)
+                const target    = extractTargetFromUrl(req.originalUrl, getDevices());
+                let bodyBuf     = req._rawBody || Buffer.alloc(0);
+                if (target && bodyBuf.length > 0) {
+                    const pb = proxyBaseUrl(req, target.ip);
+                    const tb = `${target.protocol}://${target.ip}`;
+                    try {
+                        const parsed    = JSON.parse(bodyBuf.toString('utf8'));
+                        const rewritten = rewriteRequestBody(parsed, pb, tb);
+                        bodyBuf = Buffer.from(JSON.stringify(rewritten), 'utf8');
+                    } catch { /* leave as-is */ }
+                }
+
+                // httpxy does: (options.buffer || req).pipe(proxyReq)
+                // express.json() already consumed req, so we give httpxy a
+                // PassThrough stream pre-loaded with our (possibly rewritten) body.
+                // PassThrough is a full Duplex implementing the entire Stream API,
+                // so httpxy can safely pipe it without hitting missing methods.
+                const { PassThrough } = require('node:stream');
+                const bodyStream = new PassThrough();
+                bodyStream.end(bodyBuf);
+
+                // Redirect all stream-related accesses on req to our buffer stream
+                req.pipe   = (...a) => bodyStream.pipe(...a);
+                req.on     = (...a) => { bodyStream.on(...a); return req; };
+                req.once   = (...a) => { bodyStream.once(...a); return req; };
+                req.resume = () => { bodyStream.resume(); return req; };
+                req.unpipe = (...a) => { bodyStream.unpipe(...a); return req; };
+
+                // Update Content-Length so upstream uses the correct body size
+                req.headers['content-length'] = String(bodyBuf.length);
+                delete req.headers['transfer-encoding'];
+
+                return proxy(req, res, next);
+            });
+        }
+        return proxy(req, res, next);
+    }
+
+    // Referer / cookie-based routing for asset requests without an IP prefix
+    let refIp = '';
+    const sourceUrl = req.headers.referer || req.headers.origin;
+
+    if (sourceUrl) {
+        try {
+            refIp = new URL(sourceUrl).pathname.split('/').filter(Boolean)[0] || '';
+        } catch { /* ignore malformed URLs */ }
+    } else if (req.cookies?.sp_active_device) {
+        refIp = req.cookies.sp_active_device;
+    }
+
+    if (refIp && isValidIp(refIp) && devices.some(d => d.ip === refIp)) {
+        // Top-level HTML navigation to root → redirect to device root
+        if (req.path === '/' && req.method === 'GET') {
+            const accept = req.headers.accept || '';
+            if (accept.includes('text/html')) return res.redirect(`/${refIp}/`);
+        }
+
+        if (!req.originalUrl.startsWith(`/${refIp}`)) {
+            return res.redirect(307, `/${refIp}${req.originalUrl}`);
+        }
+        return proxy(req, res, next);
+    }
+
+    next();
+}
+
+module.exports = { proxyRouter };
