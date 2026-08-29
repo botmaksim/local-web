@@ -20,7 +20,6 @@
  * upstream server (e.g. Home Assistant) receives the values it expects.
  */
 
-const cheerio = require('cheerio');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -272,119 +271,18 @@ function rewriteCookies(setCookie, targetIp) {
  * @returns {string}
  */
 function rewriteHtml(html, targetIp, originalUrl = '') {
-    const $ = cheerio.load(html, { decodeEntities: false });
-
-    // Compute dynamic base path from the current request URL
-    const urlPath = originalUrl.split('?')[0];
-    let basePath = `/${targetIp}/`;
-    if (urlPath.startsWith(`/${targetIp}/`)) {
-        basePath = urlPath.substring(0, urlPath.lastIndexOf('/') + 1);
-    }
-
-    // Intercept client-side routing and API calls
-    const interceptorScript = `
-    <script>
-    (function() {
-        const prefix = '/${targetIp}';
-        const proxyOrigin = window.location.origin;
-        const targetOrigin = 'http://' + '${targetIp}';
-
-        function rewriteUrl(url) {
-            if (!url) return url;
-            try {
-                if (typeof url === 'string' && url.startsWith('/') && !url.startsWith(prefix)) {
-                    return prefix + url;
-                }
-                const u = new URL(url, window.location.href);
-                if (u.origin === targetOrigin || u.host === '${targetIp}') {
-                    u.host = window.location.host;
-                    u.protocol = window.location.protocol;
-                    if (!u.pathname.startsWith(prefix)) {
-                        u.pathname = prefix + (u.pathname === '/' ? '' : u.pathname);
-                    }
-                    return u.href;
-                }
-                if (u.origin === proxyOrigin && !u.pathname.startsWith(prefix) && !u.pathname.startsWith('/__smartproxy')) {
-                    u.pathname = prefix + u.pathname;
-                    return u.href;
-                }
-            } catch (e) {}
-            return url;
-        }
-
-        
-        const originalFetch = window.fetch;
-        window.fetch = function() {
-            if (arguments[0]) arguments[0] = rewriteUrl(arguments[0]);
-            return originalFetch.apply(this, arguments);
-        };
-
-        const originalOpen = XMLHttpRequest.prototype.open;
-        XMLHttpRequest.prototype.open = function() {
-            if (arguments[1]) arguments[1] = rewriteUrl(arguments[1]);
-            return originalOpen.apply(this, arguments);
-        };
-        
-        // Also intercept ServiceWorker registration if any
-        if (navigator.serviceWorker) {
-            const originalRegister = navigator.serviceWorker.register;
-            navigator.serviceWorker.register = function(url, options) {
-                return originalRegister.call(this, rewriteUrl(url), options);
-            };
-        }
-    })();
-    </script>
-    `;
-
-    // Overwrite existing <base> or inject one at the top of <head>
-    if ($('base').length > 0) {
-        $('base').attr('href', basePath);
-        $('base').after(interceptorScript);
-    } else {
-        const baseTag = `<base href="${basePath}">`;
-        if ($('head').length > 0) $('head').prepend(baseTag + interceptorScript);
-        else $.root().prepend(`<head>${baseTag}${interceptorScript}</head>`);
-    }
-
-    const rewrite = val => {
-        if (!val || val.startsWith(`/${targetIp}`) ||
-            /^(https?:|\/\/|data:|#|javascript:)/i.test(val)) return val;
-        if (val.startsWith('/')) return `/${targetIp}${val}`;
-        return val;
-    };
-
-    $('[href]').each((_, el)      => { const v = rewrite($(el).attr('href'));   if (v) $(el).attr('href', v); });
-    $('[src]').each((_, el)       => { const v = rewrite($(el).attr('src'));    if (v) $(el).attr('src', v); });
-    $('form[action]').each((_, el) => { const v = rewrite($(el).attr('action')); if (v) $(el).attr('action', v); });
-
-    // Rewrite srcset (responsive images: "url descriptor, url descriptor, …")
-    $('[srcset]').each((_, el) => {
-        const srcset = $(el).attr('srcset');
-        if (!srcset) return;
-        const rewritten = srcset.split(',').map(part => {
-            const trimmed = part.trim();
-            const spaceIdx = trimmed.search(/\s/);
-            if (spaceIdx === -1) return rewrite(trimmed);
-            return rewrite(trimmed.slice(0, spaceIdx)) + trimmed.slice(spaceIdx);
-        }).join(', ');
-        $(el).attr('srcset', rewritten);
-    });
-
-    // Rewrite meta refresh tags
-    $('meta[http-equiv="refresh" i]').each((_, el) => {
-        let content = $(el).attr('content');
-        if (content) {
-            content = content.replace(
-                /(url\s*=\s*)(['"]?)\/(.*?)(['"]?)/i,
-                (m, p1, p2, p3, p4) => p3
-                    ? `${p1}${p2}/${targetIp}/${p3}${p4}`
-                    : `${p1}${p2}/${targetIp}/${p4}`
-            );
-            $(el).attr('content', content);
-        }
-    });
-
-    return $.html();
+    // Aggressive DOM rewriting (injecting <base>, prefixing hrefs, and intercepting fetch)
+    // breaks modern SPAs like Home Assistant that rely on precise window.location.pathname
+    // matching for their client-side routers.
+    // Since our proxy robustly routes requests using the `sp_active_device` cookie
+    // and Referer headers, we do not need to mutate the DOM's relative URLs.
+    
+    // We can still process the HTML with Cheerio if we need to rewrite specific
+    // meta refresh tags, but for now, to ensure maximum SPA compatibility,
+    // we return the HTML unmodified by DOM parsers (which can also strip closing tags).
+    // Absolute URL replacement (http://192.168.x.x -> proxy) is already handled 
+    // before this function is called via `replaceAbsoluteUrls`.
+    return html;
 }
 
 module.exports = {

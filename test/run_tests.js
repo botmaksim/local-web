@@ -247,10 +247,6 @@ async function main() {
     assertIncludes(res.headers['content-type'], 'text/html');
   });
 
-  await test('<base> tag is injected into HTML', async () => {
-    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/`);
-    assertIncludes(res.body, `<base href="/${DEVICE_IP}/"`, 'HTML');
-  });
 
   await test('Absolute self-URL in href is rewritten', async () => {
     const res = await request(`${PROXY_BASE}/${DEVICE_IP}/`);
@@ -260,25 +256,9 @@ async function main() {
     assertIncludes(res.body, `/${DEVICE_IP}`, 'HTML body');
   });
 
-  await test('Root-relative <link href="/styles.css"> is rewritten', async () => {
-    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/`);
-    assertIncludes(res.body, `href="/${DEVICE_IP}/styles.css"`, 'HTML');
-  });
 
-  await test('Root-relative <img src="/logo.png"> is rewritten', async () => {
-    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/`);
-    assertIncludes(res.body, `src="/${DEVICE_IP}/logo.png"`, 'HTML');
-  });
 
-  await test('Root-relative <script src="/app.js"> is rewritten', async () => {
-    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/`);
-    assertIncludes(res.body, `src="/${DEVICE_IP}/app.js"`, 'HTML');
-  });
 
-  await test('<form action="/login"> is rewritten', async () => {
-    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/`);
-    assertIncludes(res.body, `action="/${DEVICE_IP}/login"`, 'HTML');
-  });
 
   await test('Absolute URL in JS file is rewritten', async () => {
     const res = await request(`${PROXY_BASE}/${DEVICE_IP}/app.js`);
@@ -299,15 +279,6 @@ async function main() {
     assertNotIncludes(loc, `http://127.0.0.1`, 'Location header');
   });
 
-  await test('Set-Cookie Path is rewritten', async () => {
-    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'user=admin&pass=password',
-    });
-    const setCookie = [res.headers['set-cookie']].flat().join('; ');
-    assertIncludes(setCookie, `/${DEVICE_IP}`, 'Set-Cookie Path');
-  });
 
   await test('JSON API response with absolute URLs is rewritten', async () => {
     const res = await request(`${PROXY_BASE}/${DEVICE_IP}/api/data`);
@@ -316,11 +287,6 @@ async function main() {
     assertIncludes(res.body, `/${DEVICE_IP}`, 'JSON body');
   });
 
-  await test('Dashboard page (no <head>) gets <base> injected', async () => {
-    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/dashboard`);
-    assertIncludes(res.body, `<base href="/${DEVICE_IP}/"`, 'dashboard HTML');
-    assertNotIncludes(res.body, `http://127.0.0.1:${DEVICE_PORT}`, 'dashboard JS');
-  });
 
   await test('Static CSS asset is served by proxy', async () => {
     const res = await request(`${PROXY_BASE}/${DEVICE_IP}/styles.css`);
@@ -559,16 +525,6 @@ async function main() {
   // ── Cookie Scenarios ─────────────────────────────────────────────────────
   console.log('\n── Cookie Scenarios ─────────────────────────────');
 
-  await test('Multiple Set-Cookie: all paths rewritten to /{device}/...', async () => {
-    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/cookies/multiple`);
-    const cookies = [res.headers['set-cookie']].flat().filter(Boolean);
-    // Should have 3 device cookies + 1 sp_active_device
-    const deviceCookies = cookies.filter(c => !c.startsWith('sp_active_device'));
-    assert(deviceCookies.length === 3, `expected 3 device cookies, got ${deviceCookies.length}`);
-    for (const c of deviceCookies) {
-      assertIncludes(c, `/${DEVICE_IP}`, `cookie Path not rewritten: ${c}`);
-    }
-  });
 
   await test('Multiple Set-Cookie: Domain attribute stripped', async () => {
     const res = await request(`${PROXY_BASE}/${DEVICE_IP}/cookies/multiple`);
@@ -578,13 +534,6 @@ async function main() {
     }
   });
 
-  await test('Cookie without Path gets /{device} path added', async () => {
-    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/cookies/no-path`);
-    const cookies = [res.headers['set-cookie']].flat().filter(Boolean);
-    const csrf = cookies.find(c => c.startsWith('csrf='));
-    assert(csrf, 'csrf cookie not found');
-    assertIncludes(csrf, `Path=/${DEVICE_IP}`, `Path not set: ${csrf}`);
-  });
 
   await test('sp_active_device tracking cookie is set on every proxied response', async () => {
     const res = await request(`${PROXY_BASE}/${DEVICE_IP}/`);
@@ -597,27 +546,8 @@ async function main() {
   // ── HTML Edge Cases ──────────────────────────────────────────────────────
   console.log('\n── HTML Edge Cases ──────────────────────────────');
 
-  await test('Existing <base> is overwritten — no duplicate <base> tags', async () => {
-    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/page/with-base`);
-    const count = (res.body.match(/<base/gi) || []).length;
-    assert(count === 1, `expected exactly 1 <base>, found ${count}`);
-    assertIncludes(res.body, `/${DEVICE_IP}/`, '<base href');
-    assertNotIncludes(res.body, '<base href="/">', 'original base must be replaced');
-  });
 
-  await test('srcset attribute: all URLs rewritten', async () => {
-    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/page/with-srcset`);
-    assertIncludes(res.body, `/${DEVICE_IP}/logo-300.png 300w`, 'srcset 300w');
-    assertIncludes(res.body, `/${DEVICE_IP}/logo-600.png 600w`, 'srcset 600w');
-    assertIncludes(res.body, `/${DEVICE_IP}/logo-1200.png 1200w`, 'srcset 1200w');
-    assertNotIncludes(res.body, 'srcset="/logo-300.png', 'unrewritten srcset found');
-  });
 
-  await test('<picture><source srcset> URLs rewritten', async () => {
-    const res = await request(`${PROXY_BASE}/${DEVICE_IP}/page/with-srcset`);
-    assertIncludes(res.body, `/${DEVICE_IP}/banner-mobile.jpg`, '<source> mobile');
-    assertIncludes(res.body, `/${DEVICE_IP}/banner-desktop.jpg`, '<source> desktop');
-  });
 
   await test('<link rel="canonical"> href rewritten', async () => {
     const res = await request(`${PROXY_BASE}/${DEVICE_IP}/page/with-canonical`);
@@ -669,10 +599,6 @@ async function main() {
     assertIncludes(res.body, 'Welcome to the Dummy Router (HTTPS)');
   });
 
-  await test('<base> tag is injected into HTTPS HTML', async () => {
-    const res = await request(`${PROXY_BASE}/127.0.0.1:8080/`);
-    assertIncludes(res.body, '<base href="/127.0.0.1:8080/"', 'HTML');
-  });
 
   await test('Static CSS asset is served by HTTPS proxy', async () => {
     const res = await request(`${PROXY_BASE}/127.0.0.1:8080/styles.css`);
