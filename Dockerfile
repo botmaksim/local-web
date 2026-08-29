@@ -14,6 +14,7 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 
 COPY server.js .
+COPY src/ ./src/
 COPY --from=build /app/frontend/dist ./frontend/dist
 
 EXPOSE 9091
