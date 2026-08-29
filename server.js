@@ -18,7 +18,7 @@ const path         = require('path');
 const fs           = require('fs');
 
 const devicesRouter    = require('./src/router');
-const { proxyRouter }  = require('./src/proxy');
+const { proxyRouter, proxy }  = require('./src/proxy');
 
 // ---------------------------------------------------------------------------
 // App setup
@@ -75,6 +75,9 @@ const log = (level, msg) =>
 const server = app.listen(PORT, () =>
     log('INFO', `Gateway running on http://0.0.0.0:${PORT}`)
 );
+
+// Bind WebSocket upgrades to the proxy middleware
+server.on('upgrade', proxy.upgrade);
 
 // ---------------------------------------------------------------------------
 // Graceful shutdown

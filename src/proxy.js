@@ -373,4 +373,4 @@ function proxyRouter(req, res, next) {
     next();
 }
 
-module.exports = { proxyRouter };
+module.exports = { proxyRouter, proxy };
