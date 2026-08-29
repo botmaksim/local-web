@@ -67,6 +67,12 @@ const proxy = createProxyMiddleware({
             const devices = getDevices();
             const dev = devices.find(d => d.ip === refIp);
             if (dev) {
+                // Do not hijack the root proxy dashboard if routing by referer/cookie
+                const isRoot = (req.originalUrl || req.url) === '/';
+                if (isRoot && req.method === 'GET') {
+                    return undefined; // Let express handle it
+                }
+                
                 // Prepend refIp to req.url so pathRewrite strips it properly
                 req.url = `/${refIp}${req.url}`;
                 return `${dev.protocol}://${dev.ip}`;
@@ -417,9 +423,7 @@ function proxyRouter(req, res, next) {
             return next();
         }
 
-        if (!req.originalUrl.startsWith(`/${refIp}`)) {
-            return res.redirect(307, `/${refIp}${req.originalUrl}`);
-        }
+        
         return proxy(req, res, next);
     }
 

@@ -313,16 +313,7 @@ function rewriteHtml(html, targetIp, originalUrl = '') {
             return url;
         }
 
-        const originalPushState = history.pushState;
-        history.pushState = function(state, title, url) {
-            return originalPushState.apply(this, [state, title, rewriteUrl(url)]);
-        };
-
-        const originalReplaceState = history.replaceState;
-        history.replaceState = function(state, title, url) {
-            return originalReplaceState.apply(this, [state, title, rewriteUrl(url)]);
-        };
-
+        
         const originalFetch = window.fetch;
         window.fetch = function() {
             if (arguments[0]) arguments[0] = rewriteUrl(arguments[0]);
