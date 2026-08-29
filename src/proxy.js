@@ -350,9 +350,7 @@ function proxyRouter(req, res, next) {
 
                 let bodyBuf     = req._rawBody || Buffer.alloc(0);
                 
-                if (req.originalUrl.includes('/auth/login_flow') || req.originalUrl.includes('/auth/token')) {
-                    console.log(`[DEBUG-PRE-REWRITE] URL: ${req.originalUrl}, target: ${!!target}, hasBody: ${!!req._rawBody}, length: ${bodyBuf.length}, ct: ${ct}`);
-                }
+                
 
                 if (target && bodyBuf.length > 0) {
                     const pb = proxyBaseUrl(req, target.ip);
@@ -371,16 +369,12 @@ function proxyRouter(req, res, next) {
                             rewrittenStr = rewriteRequestPath(strBody, pb, tb, po);
                         }
                         
-                        if (req.originalUrl.includes('/auth/token') || req.originalUrl.includes('/auth/login_flow')) {
-                            const logLine = "[DEBUG] " + req.method + " " + req.originalUrl + " -> rewritten body:\\n" + rewrittenStr.substring(0, 500) + "\\n==========================\\n";
-                            console.log(logLine);
-                            require('fs').appendFileSync('auth_debug.log', logLine);
-                        }
+                        
 
                         bodyBuf = Buffer.from(rewrittenStr, 'utf8');
                     } catch (e) {
-                        console.error("[DEBUG] BODY REWRITE ERROR:", e);
-                        require('fs').appendFileSync('auth_debug.log', "\\n[DEBUG] ERROR in rewrite: " + String(e) + "\\n");
+                        console.error("[ERROR] Body rewrite failed:", e);
+                        
                     }
                 }
 
