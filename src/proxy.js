@@ -283,6 +283,11 @@ function proxyRouter(req, res, next) {
                 }
 
                 let bodyBuf     = req._rawBody || Buffer.alloc(0);
+                
+                if (req.originalUrl.includes('/auth/login_flow') || req.originalUrl.includes('/auth/token')) {
+                    console.log(`[DEBUG-PRE-REWRITE] URL: ${req.originalUrl}, target: ${!!target}, hasBody: ${!!req._rawBody}, length: ${bodyBuf.length}, ct: ${ct}`);
+                }
+
                 if (target && bodyBuf.length > 0) {
                     const pb = proxyBaseUrl(req, target.ip);
                     const tb = `${target.protocol}://${target.ip}`;
