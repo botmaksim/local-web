@@ -426,8 +426,16 @@ function proxyRouter(req, res, next) {
 
     if (refIp && isValidIp(refIp) && devices.some(d => d.ip === refIp)) {
         // Allow explicit navigation to the proxy dashboard
-        if (req.path === '/' && req.method === 'GET') {
-            return next();
+        // Allow explicit navigation to the proxy dashboard and its assets
+        if (req.method === 'GET') {
+            if (req.path === '/') return next();
+            
+            const path = require('path');
+            const fs = require('fs');
+            const staticPath = path.join(__dirname, '..', 'frontend', 'dist', req.path);
+            if (fs.existsSync(staticPath)) {
+                return next();
+            }
         }
 
         
