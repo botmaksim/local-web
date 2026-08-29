@@ -125,22 +125,38 @@ function replaceAbsoluteUrls(text, targetIp, req) {
  * @param {string} urlPath
  * @param {string} proxyBase   e.g. "https://proxy.example.com/192.168.100.10"
  * @param {string} targetBase  e.g. "http://192.168.100.10"
+ * @param {string} proxyOrigin e.g. "https://proxy.example.com"
  * @returns {string}
  */
-function rewriteRequestPath(urlPath, proxyBase, targetBase) {
+function rewriteRequestPath(urlPath, proxyBase, targetBase, proxyOrigin = '') {
     let out = urlPath;
 
     // Plain
     out = out.replace(new RegExp(escapeRegex(proxyBase), 'g'), targetBase);
+    if (proxyOrigin) {
+        out = out.replace(new RegExp(escapeRegex(proxyOrigin) + '(?=[/&?=]|$)', 'g'), targetBase);
+    }
 
     // URL-encoded
     out = out.replace(
         new RegExp(encodeURIComponent(proxyBase), 'gi'),
         encodeURIComponent(targetBase)
     );
+    if (proxyOrigin) {
+        out = out.replace(
+            new RegExp(encodeURIComponent(proxyOrigin) + '(?=[a-zA-Z0-9%])', 'gi'),
+            encodeURIComponent(targetBase)
+        );
+        // Also just replace the exact origin encoded
+        out = out.replace(
+            new RegExp(encodeURIComponent(proxyOrigin) + '$', 'gi'),
+            encodeURIComponent(targetBase)
+        );
+    }
 
     // Base64 state
     out = rewriteBase64State(out, proxyBase, targetBase);
+    if (proxyOrigin) out = rewriteBase64State(out, proxyOrigin, targetBase);
 
     return out;
 }
@@ -152,13 +168,20 @@ function rewriteRequestPath(urlPath, proxyBase, targetBase) {
  * @param {object} body
  * @param {string} proxyBase
  * @param {string} targetBase
+ * @param {string} proxyOrigin
  * @returns {object}
  */
-function rewriteRequestBody(body, proxyBase, targetBase) {
-    const str = JSON.stringify(body).replace(
+function rewriteRequestBody(body, proxyBase, targetBase, proxyOrigin = '') {
+    let str = JSON.stringify(body).replace(
         new RegExp(escapeRegex(proxyBase), 'g'),
         targetBase
     );
+    if (proxyOrigin) {
+        str = str.replace(
+            new RegExp(escapeRegex(proxyOrigin) + '(?=[/&"\'?=]|$)', 'g'),
+            targetBase
+        );
+    }
     return JSON.parse(str);
 }
 

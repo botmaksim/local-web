@@ -90,9 +90,8 @@ const proxy = createProxyMiddleware({
             // Set Host to the upstream's own IP so its virtual-host routing works
             proxyReq.setHeader('host', targetIp);
 
-            // Rewrite path: restore external proxy URL → internal target URL
-            // (e.g. OAuth redirect_uri / client_id values)
-            proxyReq.path = rewriteRequestPath(proxyReq.path, proxyBase, targetBase);
+            const proxyOrigin = proxyBaseUrl(req, '').replace(/\/$/, '');
+            proxyReq.path = rewriteRequestPath(proxyReq.path, proxyBase, targetBase, proxyOrigin);
 
 
             // Rewrite Origin / Referer so CSRF checks pass
@@ -219,20 +218,31 @@ function proxyRouter(req, res, next) {
         // Solution: capture the raw bytes with verify(), rewrite URLs in them,
         // then rebuild req as a Readable so HPM pipes the correct data.
         const ct = (req.headers['content-type'] || '').toLowerCase();
-        if (ct.includes('application/json') || ct.includes('+json')) {
-            return express.json({
-                verify: (req, _res, buf) => { req._rawBody = buf; },
-            })(req, res, () => {
+        if (ct.includes('application/json') || ct.includes('+json') || ct.includes('application/x-www-form-urlencoded')) {
+            const parser = ct.includes('json') 
+                ? express.json({ verify: (req, _res, buf) => { req._rawBody = buf; } })
+                : express.urlencoded({ extended: true, verify: (req, _res, buf) => { req._rawBody = buf; } });
+
+            return parser(req, res, () => {
                 // Rewrite URLs inside the raw body buffer (e.g. HA OAuth client_id)
                 const target    = extractTargetFromUrl(req.originalUrl, getDevices());
                 let bodyBuf     = req._rawBody || Buffer.alloc(0);
                 if (target && bodyBuf.length > 0) {
                     const pb = proxyBaseUrl(req, target.ip);
                     const tb = `${target.protocol}://${target.ip}`;
+                    const po = proxyBaseUrl(req, '').replace(/\/$/, ''); // https://proxy.example.com
                     try {
-                        const parsed    = JSON.parse(bodyBuf.toString('utf8'));
-                        const rewritten = rewriteRequestBody(parsed, pb, tb);
-                        bodyBuf = Buffer.from(JSON.stringify(rewritten), 'utf8');
+                        const strBody = bodyBuf.toString('utf8');
+                        let rewrittenStr = strBody;
+                        if (ct.includes('json')) {
+                            const parsed    = JSON.parse(strBody);
+                            const rewritten = rewriteRequestBody(parsed, pb, tb, po);
+                            rewrittenStr = JSON.stringify(rewritten);
+                        } else {
+                            // URL-encoded string replacement
+                            rewrittenStr = rewriteRequestPath(strBody, pb, tb, po);
+                        }
+                        bodyBuf = Buffer.from(rewrittenStr, 'utf8');
                     } catch { /* leave as-is */ }
                 }
 
