@@ -83,21 +83,19 @@ function App() {
     try {
       const res = await fetch(`${API_URL}/${dev.id}/clear-cookies`, { method: 'POST' });
       if (!res.ok) throw new Error(`Server error ${res.status}`);
-      
-      // Home Assistant stores auth in localStorage, not cookies.
-      // We only wipe it if the stored token actually belongs to this device's IP.
-      try {
-        const rawTokens = window.localStorage.getItem('hassTokens');
-        if (rawTokens && rawTokens.includes(dev.ip)) {
-          window.localStorage.removeItem('hassTokens');
-        }
-      } catch (e) {
-        // ignore JSON / storage access errors
-      }
-      
       showToast('Куки устройства очищены 🍪');
     } catch (err) {
       setError(err.message);
+    }
+  };
+
+  const handleClearLocalStorage = () => {
+    try {
+      window.localStorage.clear();
+      window.sessionStorage.clear();
+      showToast('LocalStorage и SessionStorage очищены 🧹');
+    } catch (err) {
+      setError('Не удалось очистить LocalStorage: ' + err.message);
     }
   };
 
@@ -135,6 +133,14 @@ function App() {
     <div className="dashboard">
       <header>
         <h1>Smart Proxy</h1>
+        <button 
+          type="button" 
+          onClick={handleClearLocalStorage} 
+          className="btn-clear-storage"
+          title="Сбросить локальное хранилище браузера (токены Home Assistant и SPA)"
+        >
+          🧹 Очистить LocalStorage
+        </button>
       </header>
 
       {error && (

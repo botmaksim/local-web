@@ -49,6 +49,10 @@ body {
 /* ── Header ───────────────────────────────────────────────── */
 header {
   text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.8rem;
   animation: fadeInDown 0.8s ease-out;
 }
 
@@ -61,6 +65,28 @@ header h1 {
   background-clip: text;
   margin: 0;
   letter-spacing: -0.02em;
+}
+
+.btn-clear-storage {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--card-border);
+  color: var(--text-secondary);
+  padding: 0.45rem 1rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.btn-clear-storage:hover {
+  background: rgba(255, 71, 87, 0.12);
+  border-color: rgba(255, 71, 87, 0.35);
+  color: #ff6b78;
+  transform: translateY(-1px);
 }
 
 header p {
