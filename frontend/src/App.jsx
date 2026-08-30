@@ -83,7 +83,12 @@ function App() {
     try {
       const res = await fetch(`${API_URL}/${id}/clear-cookies`, { method: 'POST' });
       if (!res.ok) throw new Error(`Server error ${res.status}`);
-      showToast('Куки устройства очищены 🍪');
+      
+      // Home Assistant stores auth in localStorage, not cookies!
+      // Since localStorage is shared per origin, we can wipe its specific token here.
+      window.localStorage.removeItem('hassTokens');
+      
+      showToast('Сброс завершён 🍪 (куки и токены удалены)');
     } catch (err) {
       setError(err.message);
     }
