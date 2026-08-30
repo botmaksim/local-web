@@ -91,14 +91,39 @@ router.post('/:id/clear-cookies', (req, res) => {
     if (!device) return res.status(404).json({ error: 'Device not found' });
     
     const { getTrackedCookies } = require('./cookie-tracker');
-    const keys = getTrackedCookies(device.ip);
     
-    // Clear tracked device cookies
-    keys.forEach(k => res.clearCookie(k, { path: '/' }));
-    // Also clear the active device cookie to log out of the proxy session
+    const otherTracked = new Set();
+    devices.forEach(d => {
+        if (d.id !== device.id) {
+            getTrackedCookies(d.ip).forEach(k => otherTracked.add(k));
+        }
+    });
+
+    let clearedCount = 0;
+
+    // Clear tracked cookies for THIS device
+    const thisTracked = getTrackedCookies(device.ip);
+    thisTracked.forEach(k => {
+        res.clearCookie(k, { path: '/' });
+        clearedCount++;
+    });
+
+    // Also aggressively clear any unknown cookies sent by the browser
+    // (e.g. cookies set via JS document.cookie which bypass our tracker)
+    if (req.cookies) {
+        Object.keys(req.cookies).forEach(k => {
+            // Don't clear cookies explicitly owned by other devices, and skip active device
+            if (!otherTracked.has(k) && k !== 'sp_active_device' && !thisTracked.includes(k)) {
+                res.clearCookie(k, { path: '/' });
+                clearedCount++;
+            }
+        });
+    }
+
     res.clearCookie('sp_active_device', { path: '/' });
+    clearedCount++;
     
-    res.json({ success: true, cleared: keys.length + 1 });
+    res.json({ success: true, cleared: clearedCount });
 });
 
 module.exports = router;

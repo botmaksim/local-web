@@ -8,6 +8,7 @@ function App() {
   const [devices, setDevices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [toast, setToast] = useState(null);
 
   // Add-form state
   const [name, setName] = useState('');
@@ -73,11 +74,16 @@ function App() {
     }
   };
 
+  const showToast = (message) => {
+    setToast(message);
+    setTimeout(() => setToast(null), 3000);
+  };
+
   const handleClearCookies = async (id) => {
     try {
       const res = await fetch(`${API_URL}/${id}/clear-cookies`, { method: 'POST' });
       if (!res.ok) throw new Error(`Server error ${res.status}`);
-      alert('Куки устройства успешно очищены.');
+      showToast('Куки устройства очищены 🍪');
     } catch (err) {
       setError(err.message);
     }
@@ -123,6 +129,12 @@ function App() {
         <div className="error-banner" role="alert">
           ⚠️ {error}
           <button className="error-close" onClick={() => setError(null)} aria-label="Закрыть">✕</button>
+        </div>
+      )}
+
+      {toast && (
+        <div className="toast-notification" role="alert">
+          {toast}
         </div>
       )}
 
