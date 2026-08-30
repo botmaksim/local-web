@@ -79,16 +79,23 @@ function App() {
     setTimeout(() => setToast(null), 3000);
   };
 
-  const handleClearCookies = async (id) => {
+  const handleClearCookies = async (dev) => {
     try {
-      const res = await fetch(`${API_URL}/${id}/clear-cookies`, { method: 'POST' });
+      const res = await fetch(`${API_URL}/${dev.id}/clear-cookies`, { method: 'POST' });
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       
-      // Home Assistant stores auth in localStorage, not cookies!
-      // Since localStorage is shared per origin, we can wipe its specific token here.
-      window.localStorage.removeItem('hassTokens');
+      // Home Assistant stores auth in localStorage, not cookies.
+      // We only wipe it if the stored token actually belongs to this device's IP.
+      try {
+        const rawTokens = window.localStorage.getItem('hassTokens');
+        if (rawTokens && rawTokens.includes(dev.ip)) {
+          window.localStorage.removeItem('hassTokens');
+        }
+      } catch (e) {
+        // ignore JSON / storage access errors
+      }
       
-      showToast('Сброс завершён 🍪 (куки и токены удалены)');
+      showToast('Куки устройства очищены 🍪');
     } catch (err) {
       setError(err.message);
     }
@@ -245,7 +252,7 @@ function App() {
                   </a>
                   <button onClick={() => startEdit(dev)} className="btn-edit">Изменить</button>
                   <button onClick={() => handleDelete(dev.id, dev.name)} className="btn-del">Удалить</button>
-                  <button onClick={() => handleClearCookies(dev.id)} className="btn-clear" title="Очистить куки этого устройства">Сброс куки</button>
+                  <button onClick={() => handleClearCookies(dev)} className="btn-clear" title="Очистить куки этого устройства">Сброс куки</button>
                 </div>
               </div>
             );
