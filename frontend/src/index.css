@@ -269,14 +269,14 @@ header p {
   align-self: flex-start;
 }
 
-/* ── Card Actions ─────────────────────────────────────────── */
 .card-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.8rem;
   margin-top: auto;
 }
 
-.btn-open, .btn-del, .btn-edit {
+.btn-open, .btn-del, .btn-edit, .btn-clear {
   flex: 1;
   text-align: center;
   padding: 0.6rem;
@@ -313,6 +313,13 @@ header p {
   border-color: var(--warn);
 }
 .btn-edit:hover { background: var(--warn); color: #1a1a1a; transform: translateY(-1px); }
+
+.btn-clear {
+  background: transparent;
+  color: #60a5fa;
+  border-color: rgba(96, 165, 250, 0.5);
+}
+.btn-clear:hover { background: #60a5fa; color: #1a1a1a; transform: translateY(-1px); }
 
 /* ── Edit Mode ────────────────────────────────────────────── */
 .card.edit-mode { border-color: rgba(170, 59, 255, 0.4); }

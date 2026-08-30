@@ -240,7 +240,10 @@ const proxy = createProxyMiddleware({
                 );
             }
 
-            // Rewrite device Set-Cookie headers and append our session-tracking cookie.
+            // Track and rewrite device Set-Cookie headers and append our session-tracking cookie.
+            if (headers['set-cookie']) {
+                require('./cookie-tracker').trackCookies(targetIp, headers['set-cookie']);
+            }
             const deviceCookies = headers['set-cookie']
                 ? rewriteCookies(headers['set-cookie'], targetIp)
                 : [];

@@ -73,6 +73,16 @@ function App() {
     }
   };
 
+  const handleClearCookies = async (id) => {
+    try {
+      const res = await fetch(`${API_URL}/${id}/clear-cookies`, { method: 'POST' });
+      if (!res.ok) throw new Error(`Server error ${res.status}`);
+      alert('Куки устройства успешно очищены.');
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
   // ─── Edit ─────────────────────────────────────────────────────────────────
   const startEdit = (dev) => {
     setEditingId(dev.id);
@@ -218,6 +228,7 @@ function App() {
                   </a>
                   <button onClick={() => startEdit(dev)} className="btn-edit">Изменить</button>
                   <button onClick={() => handleDelete(dev.id, dev.name)} className="btn-del">Удалить</button>
+                  <button onClick={() => handleClearCookies(dev.id)} className="btn-clear" title="Очистить куки этого устройства">Сброс куки</button>
                 </div>
               </div>
             );

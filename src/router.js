@@ -85,4 +85,20 @@ router.delete('/:id', (req, res) => {
     res.json({ success: true });
 });
 
+router.post('/:id/clear-cookies', (req, res) => {
+    const devices = getDevices();
+    const device = devices.find(d => d.id === req.params.id);
+    if (!device) return res.status(404).json({ error: 'Device not found' });
+    
+    const { getTrackedCookies } = require('./cookie-tracker');
+    const keys = getTrackedCookies(device.ip);
+    
+    // Clear tracked device cookies
+    keys.forEach(k => res.clearCookie(k, { path: '/' }));
+    // Also clear the active device cookie to log out of the proxy session
+    res.clearCookie('sp_active_device', { path: '/' });
+    
+    res.json({ success: true, cleared: keys.length + 1 });
+});
+
 module.exports = router;
