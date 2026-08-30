@@ -114,6 +114,11 @@ router.post('/:id/clear-cookies', (req, res) => {
         Object.keys(req.cookies).forEach(k => {
             // Don't clear cookies explicitly owned by other devices, and skip active device
             if (!otherTracked.has(k) && k !== 'sp_active_device' && !thisTracked.includes(k)) {
+                // Protect Cloudflare cookies (Cloudflare Access / Zero Trust)
+                const kLower = k.toLowerCase();
+                if (kLower.startsWith('cf_') || kLower.startsWith('__cf')) {
+                    return; // skip
+                }
                 res.clearCookie(k, { path: '/' });
                 clearedCount++;
             }
