@@ -93,9 +93,9 @@ function App() {
     try {
       window.localStorage.clear();
       window.sessionStorage.clear();
-      showToast('LocalStorage и SessionStorage очищены 🧹');
+      showToast('Хранилище браузера очищено 🧹');
     } catch (err) {
-      setError('Не удалось очистить LocalStorage: ' + err.message);
+      setError('Не удалось очистить хранилище: ' + err.message);
     }
   };
 
@@ -137,9 +137,9 @@ function App() {
           type="button" 
           onClick={handleClearLocalStorage} 
           className="btn-clear-storage"
-          title="Сбросить локальное хранилище браузера (токены Home Assistant и SPA)"
+          title="Очистить локальное хранилище браузера"
         >
-          🧹 Очистить LocalStorage
+          🧹 Очистить хранилище
         </button>
       </header>
 
