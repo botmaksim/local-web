@@ -19,6 +19,7 @@ const fs           = require('fs');
 
 const devicesRouter    = require('./src/router');
 const { proxyRouter, proxy }  = require('./src/proxy');
+const { clearAuthCookies }    = require('./src/auth');
 
 // ---------------------------------------------------------------------------
 // App setup
@@ -40,6 +41,18 @@ app.use(cookieParser());
 // /__smartproxy_api/ must be same-origin only (no CORS).
 // Proxied device responses carry their own CORS headers from the upstream.
 app.use('/__smartproxy_api/devices', express.json(), devicesRouter);
+
+app.post('/__smartproxy_api/logout', (req, res) => {
+    clearAuthCookies(req, res);
+    res.json({ success: true });
+});
+
+// Cloudflare Access logout endpoint fallback (for local dev / direct origin access)
+app.all('/cdn-cgi/access/logout', (req, res) => {
+    clearAuthCookies(req, res);
+    const returnTo = req.query.returnTo || '/';
+    res.redirect(returnTo);
+});
 
 // ---------------------------------------------------------------------------
 // Reverse proxy

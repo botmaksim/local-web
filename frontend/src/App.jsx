@@ -9,6 +9,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [toast, setToast] = useState(null);
+  const [loggingOut, setLoggingOut] = useState(false);
 
   // Add-form state
   const [name, setName] = useState('');
@@ -99,6 +100,34 @@ function App() {
     }
   };
 
+  const handleLogout = async () => {
+    setLoggingOut(true);
+    try {
+      await fetch('/__smartproxy_api/logout', { method: 'POST' });
+    } catch (err) {
+      console.error('Logout error:', err);
+    }
+
+    try {
+      const cookies = document.cookie.split(';');
+      for (const cookie of cookies) {
+        const eqPos = cookie.indexOf('=');
+        const cookieName = eqPos > -1 ? cookie.substring(0, eqPos).trim() : cookie.trim();
+        if (cookieName) {
+          document.cookie = `${cookieName}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/`;
+          document.cookie = `${cookieName}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/;domain=${window.location.hostname}`;
+        }
+      }
+      window.localStorage.clear();
+      window.sessionStorage.clear();
+    } catch (err) {
+      console.error('Storage clear error:', err);
+    }
+
+    const returnTarget = encodeURIComponent(window.location.origin || '/');
+    window.location.href = `/cdn-cgi/access/logout?returnTo=${returnTarget}`;
+  };
+
   // ─── Edit ─────────────────────────────────────────────────────────────────
   const startEdit = (dev) => {
     setEditingId(dev.id);
@@ -128,9 +157,93 @@ function App() {
     }
   };
 
+  // ─── Drag & Drop ──────────────────────────────────────────────────────────
+  const [draggedId, setDraggedId] = useState(null);
+  const [dragOverId, setDragOverId] = useState(null);
+
+  const handleDragStart = (e, id) => {
+    setDraggedId(id);
+    e.dataTransfer.effectAllowed = 'move';
+    // Use a tiny timeout to allow the browser to capture the ghost image before applying styles
+    setTimeout(() => {
+      const el = document.getElementById(`card-${id}`);
+      if (el) el.classList.add('dragging');
+    }, 0);
+  };
+
+  const handleDragEnd = (e, id) => {
+    setDraggedId(null);
+    setDragOverId(null);
+    const el = document.getElementById(`card-${id}`);
+    if (el) el.classList.remove('dragging');
+  };
+
+  const handleDragOver = (e, id) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (id !== dragOverId) {
+      setDragOverId(id);
+    }
+  };
+
+  const handleDragLeave = (e, id) => {
+    if (dragOverId === id) {
+      setDragOverId(null);
+    }
+  };
+
+  const handleDrop = async (e, targetId) => {
+    e.preventDefault();
+    setDragOverId(null);
+    if (!draggedId || draggedId === targetId) return;
+
+    const oldIndex = devices.findIndex(d => d.id === draggedId);
+    const newIndex = devices.findIndex(d => d.id === targetId);
+    if (oldIndex === -1 || newIndex === -1) return;
+
+    const newDevices = [...devices];
+    const [movedItem] = newDevices.splice(oldIndex, 1);
+    newDevices.splice(newIndex, 0, movedItem);
+
+    setDevices(newDevices);
+
+    try {
+      const res = await fetch(`${API_URL}/reorder`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newDevices.map(d => d.id)),
+      });
+      if (!res.ok) throw new Error('Failed to save order');
+    } catch (err) {
+      setError(err.message);
+      fetchDevices(); // revert on error
+    }
+  };
+
   // ─── Render ───────────────────────────────────────────────────────────────
   return (
     <div className="dashboard">
+      <div className="dashboard-top-bar">
+        <button
+          type="button"
+          onClick={handleLogout}
+          className="btn-logout"
+          disabled={loggingOut}
+          title="Выйти из аккаунта (удалить токен авторизации Cloudflare Access)"
+        >
+          {loggingOut ? (
+            <span className="spinner small" />
+          ) : (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+          )}
+          <span>{loggingOut ? 'Выход…' : 'Выход'}</span>
+        </button>
+      </div>
+
       <header>
         <h1>Smart Proxy</h1>
         <button 
@@ -244,9 +357,19 @@ function App() {
             }
 
             return (
-              <div key={dev.id} className="card">
+              <div 
+                id={`card-${dev.id}`}
+                key={dev.id} 
+                className={`card ${dragOverId === dev.id ? 'drag-over' : ''}`}
+                draggable
+                onDragStart={(e) => handleDragStart(e, dev.id)}
+                onDragEnd={(e) => handleDragEnd(e, dev.id)}
+                onDragOver={(e) => handleDragOver(e, dev.id)}
+                onDragLeave={(e) => handleDragLeave(e, dev.id)}
+                onDrop={(e) => handleDrop(e, dev.id)}
+              >
                 <div className="card-header">
-                  <h3>{dev.name}</h3>
+                  <h3 title="Зажмите и потяните для изменения порядка" className="drag-handle">{dev.name}</h3>
                   <span className={`badge badge-${dev.protocol || 'http'}`}>
                     {dev.protocol || 'http'}
                   </span>

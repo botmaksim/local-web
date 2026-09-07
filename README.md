@@ -1,68 +1,133 @@
-# Smart Proxy Gateway
+# Smart Proxy Gateway (netmap)
 
-Smart Proxy Gateway is a lightweight, containerized web proxy designed to provide centralized, secure access to various local network web interfaces (such as routers, smart home devices, printers, and NAS) through a single entry point.
+Smart Proxy Gateway is a lightweight, containerized reverse proxy designed to provide centralized, secure access to local network web interfaces (such as routers, smart home appliances, NAS systems, and printers) through a unified entry point.
 
-It eliminates the need for managing multiple subdomains by leveraging dynamic HTML rewriting and Referer-based request recovery, ensuring that complex web interfaces and their sub-resources load correctly.
+It eliminates the overhead of managing multiple subdomains or complex VPN routes by combining dynamic path rewriting, HTML/JS asset rewriting, device-scoped cookie isolation, and Referer-based request recovery.
+
+---
+
+## Key Features
+
+- **Centralized Gateway**: Route to any registered local device via `http://<gateway-host>:9091/<ip>/`.
+- **Drag-and-Drop Reordering**: Rearrange device cards on the dashboard via intuitive drag-and-drop; device order is automatically synchronized with the backend.
+- **Cloudflare Access & Zero Trust Integration**:
+  - Native logout workflow that revokes active sessions and clears `CF_Authorization`, `CF_AppSession`, and auxiliary verification cookies.
+  - Dedicated `/cdn-cgi/access/logout` integration with fallback redirection to origin.
+- **Dynamic Content & Link Rewriting**:
+  - Automatically rewrites root-relative (`/`), absolute, and relative URLs within HTML, CSS, JavaScript, and JSON payloads.
+  - Injects dynamic `<base>` tags to preserve relative asset loading.
+- **Cookie Isolation & Management**:
+  - Strips upstream `Domain` restrictions to enforce device cookie isolation.
+  - Tracks active sessions using device context cookies (`sp_active_device`).
+  - Per-device cookie reset to resolve stale upstream authentication states without clearing global sessions.
+  - Client-side storage cleaner to purge local and session storage safely.
+- **SSRF & Host Header Protection**:
+  - Strict input validation preventing SSRF attacks, directory traversal, credentials in IP fields (`user:pass@host`), and unauthorized private subnet probes.
+  - Proxy requests are restricted strictly to devices registered in the configuration store.
+- **HTTPS Upstream Support**: Seamlessly proxies both plain HTTP and self-signed HTTPS device interfaces.
+
+---
 
 ## Architecture
 
-The project consists of two main components:
-- **Proxy Backend (`server.js`)**: A Node.js and Express application utilizing `http-proxy-middleware`. It acts as a transparent proxy, dynamically inserting `<base>` tags and recovering lost requests for absolute paths.
-- **Frontend Dashboard (`frontend/`)**: A React-based Single Page Application (SPA) providing a modern management interface to add, edit, and remove devices from the gateway.
+```
+                    ┌─────────────────────────┐
+                    │    Cloudflare Access    │
+                    │   (Identity & Tunnel)   │
+                    └───────────┬─────────────┘
+                                │
+                                ▼
+                     Smart Proxy Gateway (:9091)
+         ┌──────────────────────┴──────────────────────┐
+         │                                             │
+         ▼                                             ▼
+  Management API & SPA                          Reverse Proxy
+  - /__smartproxy_api/devices                   - /<device-ip>/...
+  - /__smartproxy_api/logout                    - Dynamic URL Rewriter
+  - /cdn-cgi/access/logout                      - Cookie Stripper / Tracker
+  - Vite / React Dashboard (netmap)             - Referer Fallback Handler
+         │                                             │
+         ▼                                             ▼
+   devices.json                            Target Device (LAN / IoT)
+```
 
-## Features
+- **Backend (`server.js`)**: Express-based application with `http-proxy-middleware`, custom streaming response transformers, and file-backed persistence (`data/devices.json`).
+- **Dashboard (`frontend/`)**: Vite-powered React single page application with modern glassmorphic styling, responsive layout, drag-and-drop controls, and status notifications.
 
-- **Centralized Access**: Access any device on your local network through a single domain and port (`http://localhost:9091/<ip>/`).
-- **Dynamic Link Rewriting**: Automatically rewrites absolute and relative paths in HTML responses to ensure CSS, JavaScript, and images load correctly behind the proxy.
-- **Referer-based Request Recovery**: Intelligently intercepts requests for missing assets triggered by JavaScript or hardcoded absolute paths by analyzing the `Referer` header and routing them to the correct device.
-- **SSRF Protection**: Hardened proxy routing that restricts connections strictly to the IP addresses registered in the dashboard database.
+---
 
-## Installation and Usage
+## Installation & Deployment
 
 ### Prerequisites
 
-- [Docker](https://docs.docker.com/get-docker/)
-- [Docker Compose](https://docs.docker.com/compose/install/)
+- [Docker](https://docs.docker.com/get-docker/) & [Docker Compose](https://docs.docker.com/compose/install/), or
+- [Node.js](https://nodejs.org/) (v18 or newer) and `npm`.
 
-### Running the Application
-
-The application is fully containerized. To build and start the service in detached mode, run:
+### Production Deployment via Docker Compose
 
 ```bash
 docker compose up -d --build
 ```
 
-The gateway and dashboard will be available at `http://localhost:9091`.
+The gateway dashboard will be accessible at `http://localhost:9091`.
 
-### Managing Devices
+### Local Development Setup
 
-1. Navigate to the dashboard at `http://localhost:9091`.
-2. Use the provided form to add a new device by specifying its name and IP address (e.g., `192.168.1.1` or `192.168.1.1:8080`).
-3. Click "Открыть" (Open) on the device card to access its web interface securely through the proxy.
-
-## Development
-
-To run the project locally without Docker:
-
-1. Install dependencies for the backend:
+1. **Install Backend Dependencies**:
    ```bash
    npm install
    ```
-2. Start the backend server:
+
+2. **Start Backend Server**:
    ```bash
    npm run dev
    ```
-3. Install dependencies for the frontend:
+
+3. **Install Frontend Dependencies & Build**:
    ```bash
    cd frontend
    npm install
-   ```
-4. Start the frontend development server:
-   ```bash
-   npm run dev
+   npm run build
+   cd ..
    ```
 
-## Security Considerations
+---
 
-- **Authorization**: The dashboard currently operates without authentication. It is strongly recommended to place this gateway behind a secure reverse proxy (like Nginx) or a VPN tunnel if exposed to the internet.
-- **SSRF Prevention**: The proxy middleware actively checks incoming requests against the registered device list (`devices.json`) and denies unauthorized outbound connections.
+## Management API Reference
+
+All management endpoints require same-origin requests.
+
+| Method   | Endpoint                                      | Description                                                    |
+| :------- | :-------------------------------------------- | :------------------------------------------------------------- |
+| `GET`    | `/__smartproxy_api/devices`                   | Lists all registered devices.                                  |
+| `POST`   | `/__smartproxy_api/devices`                   | Registers a new device (`{ name, ip, protocol }`).             |
+| `POST`   | `/__smartproxy_api/devices/reorder`           | Reorders devices based on an array of device IDs.              |
+| `PUT`    | `/__smartproxy_api/devices/:id`               | Updates an existing device's name, IP, or protocol.            |
+| `DELETE` | `/__smartproxy_api/devices/:id`               | Deletes a device by ID.                                        |
+| `POST`   | `/__smartproxy_api/devices/:id/clear-cookies`  | Clears stored cookies associated with a specific device.       |
+| `POST`   | `/__smartproxy_api/logout`                    | Clears Cloudflare Access and proxy session cookies.            |
+| `ALL`    | `/cdn-cgi/access/logout`                      | Cloudflare logout fallback route; clears auth and redirects.  |
+
+---
+
+## Automated Testing
+
+The project includes an end-to-end integration test suite covering API validation, proxying, URL and asset rewriting, redirect chains, cookie isolation, and authentication token removal:
+
+Run the full integration test suite:
+```bash
+node test/run_tests.js --spawn
+```
+
+Run the standalone authentication token deletion test:
+```bash
+node test/test_auth_token_deletion.js
+```
+
+---
+
+## Security & Best Practices
+
+1. **Cloudflare Zero Trust / Access**: When exposing the gateway externally, place it behind Cloudflare Access. The built-in logout button cleanly terminates the session across both the proxy and edge access layers.
+2. **Device Whitelisting**: Connections to devices not listed in `devices.json` are rejected with `403 Forbidden`.
+3. **Internal Subnet Safety**: Input validation ensures all device definitions conform strictly to IPv4 and standard port semantics, disallowing unexpected protocol schemes or embedded user credentials.

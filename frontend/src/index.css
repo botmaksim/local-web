@@ -44,6 +44,54 @@ body {
   display: flex;
   flex-direction: column;
   gap: 2.5rem;
+  position: relative;
+}
+
+.dashboard-top-bar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 10;
+  animation: fadeInDown 0.8s ease-out;
+}
+
+.btn-logout {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--card-border);
+  color: var(--text-secondary);
+  padding: 0.5rem 1rem;
+  border-radius: 10px;
+  font-size: 0.88rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.btn-logout:hover:not(:disabled) {
+  background: rgba(255, 71, 87, 0.15);
+  border-color: rgba(255, 71, 87, 0.4);
+  color: #ff6b78;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(255, 71, 87, 0.15);
+}
+
+.btn-logout:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@media (max-width: 640px) {
+  .dashboard-top-bar {
+    position: static;
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: -1.2rem;
+  }
 }
 
 /* ── Header ───────────────────────────────────────────────── */
@@ -262,6 +310,7 @@ header p {
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
 }
+.spinner.small { width: 14px; height: 14px; border-width: 2px; }
 .spinner.large { width: 40px; height: 40px; border-width: 3px; border-top-color: var(--accent); }
 
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -311,6 +360,25 @@ header p {
   margin: 0;
   font-size: 1.3rem;
   font-weight: 600;
+}
+
+.drag-handle {
+  cursor: grab;
+}
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.card.dragging {
+  opacity: 0.4;
+  transform: scale(0.98);
+}
+
+.card.drag-over {
+  border-color: var(--accent);
+  border-style: dashed;
+  box-shadow: 0 0 15px rgba(170, 59, 255, 0.4);
+  background: rgba(170, 59, 255, 0.05);
 }
 
 /* ── Protocol Badge ───────────────────────────────────────── */

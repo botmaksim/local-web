@@ -68,11 +68,11 @@ let failed = 0;
 async function test(name, fn) {
   try {
     await fn();
-    console.log(`  ✅  ${name}`);
+    console.log(`  [PASS]  ${name}`);
     passed++;
   } catch (err) {
-    console.error(`  ❌  ${name}`);
-    console.error(`      ${err.message}`);
+    console.error(`  [FAIL]  ${name}`);
+    console.error(`          ${err.message}`);
     failed++;
   }
 }
@@ -220,6 +220,29 @@ async function main() {
     assert(JSON.parse(res.body).name === 'Updated Name', 'name not updated');
   });
 
+  await test('POST /__smartproxy_api/devices/reorder reorders devices', async () => {
+    // Add another device to test order
+    const d2 = await addDevice('Temp2', '192.168.1.100', 'http');
+    
+    let list = JSON.parse((await request(`${PROXY_BASE}/__smartproxy_api/devices`)).body);
+    const d1_id = createdDevice.id;
+    const d2_id = d2.id;
+    
+    const reorderRes = await request(`${PROXY_BASE}/__smartproxy_api/devices/reorder`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify([d2_id, d1_id]),
+    });
+    assert(reorderRes.status === 200, `reorder status ${reorderRes.status}`);
+    
+    list = JSON.parse((await request(`${PROXY_BASE}/__smartproxy_api/devices`)).body);
+    const idx1 = list.findIndex(x => x.id === d1_id);
+    const idx2 = list.findIndex(x => x.id === d2_id);
+    assert(idx2 < idx1, 'Temp2 should come before Updated Name after reorder');
+    
+    // cleanup
+    await request(`${PROXY_BASE}/__smartproxy_api/devices/${d2_id}`, { method: 'DELETE' });
+  });
+
   await test('DELETE /__smartproxy_api/devices/:id removes device', async () => {
     // Re-add so we can delete
     const d = await addDevice('TempDel', DEVICE_IP, 'http');
@@ -227,6 +250,30 @@ async function main() {
     assert(res.status === 200, `status ${res.status}`);
     const list = JSON.parse((await request(`${PROXY_BASE}/__smartproxy_api/devices`)).body);
     assert(!list.some(x => x.id === d.id), 'device still present');
+  });
+
+  await test('POST /__smartproxy_api/logout clears Cloudflare and auth cookies', async () => {
+    const res = await request(`${PROXY_BASE}/__smartproxy_api/logout`, {
+      method: 'POST',
+      headers: { 'Cookie': 'CF_Authorization=some-token; sp_active_device=127.0.0.1' },
+    });
+    assert(res.status === 200, `status ${res.status}`);
+    const cookies = [res.headers['set-cookie']].flat().filter(Boolean);
+    const cfCookie = cookies.find(c => c.startsWith('CF_Authorization='));
+    assert(cfCookie, 'CF_Authorization clear cookie missing');
+    assertIncludes(cfCookie, 'Expires=Thu, 01 Jan 1970', 'CF_Authorization expired');
+    const spCookie = cookies.find(c => c.startsWith('sp_active_device='));
+    assert(spCookie, 'sp_active_device clear cookie missing');
+  });
+
+  await test('GET /cdn-cgi/access/logout redirects and clears cookies', async () => {
+    const res = await request(`${PROXY_BASE}/cdn-cgi/access/logout?returnTo=/dashboard`);
+    assert(res.status === 302, `expected 302, got ${res.status}`);
+    assert(res.headers['location'] === '/dashboard', `wrong location: ${res.headers['location']}`);
+    const cookies = [res.headers['set-cookie']].flat().filter(Boolean);
+    const cfCookie = cookies.find(c => c.startsWith('CF_Authorization='));
+    assert(cfCookie, 'CF_Authorization clear cookie missing');
+    assertIncludes(cfCookie, 'Expires=Thu, 01 Jan 1970', 'CF_Authorization expired');
   });
 
   await test('Unregistered IP returns 403', async () => {

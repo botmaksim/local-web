@@ -15,6 +15,7 @@
 
 const express = require('express');
 const { getDevices, saveDevices, isValidIp, isBlockedIp } = require('./devices');
+const { clearAuthCookies } = require('./auth');
 
 const router = express.Router();
 
@@ -56,6 +57,29 @@ router.post('/', (req, res) => {
     try { saveDevices(devices); } catch { return res.status(500).json({ error: 'Failed to save device' }); }
 
     res.status(201).json(newDevice);
+});
+
+router.post('/reorder', (req, res) => {
+    const ids = req.body;
+    if (!Array.isArray(ids)) return res.status(400).json({ error: 'Expected array of IDs' });
+
+    const devices = getDevices();
+    const devicesById = Object.fromEntries(devices.map(d => [d.id, d]));
+    
+    const newDevices = [];
+    for (const id of ids) {
+        if (devicesById[id]) {
+            newDevices.push(devicesById[id]);
+            delete devicesById[id];
+        }
+    }
+    // Append any existing devices that were missing in the request array
+    for (const d of Object.values(devicesById)) {
+        newDevices.push(d);
+    }
+    
+    try { saveDevices(newDevices); } catch { return res.status(500).json({ error: 'Failed to save order' }); }
+    res.json({ success: true });
 });
 
 router.put('/:id', (req, res) => {
@@ -129,6 +153,11 @@ router.post('/:id/clear-cookies', (req, res) => {
     clearedCount++;
     
     res.json({ success: true, cleared: clearedCount });
+});
+
+router.post('/logout', (req, res) => {
+    clearAuthCookies(req, res);
+    res.json({ success: true });
 });
 
 module.exports = router;
