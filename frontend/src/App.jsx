@@ -10,6 +10,7 @@ function App() {
   const [error, setError] = useState(null);
   const [toast, setToast] = useState(null);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [initialLoad, setInitialLoad] = useState(true);
 
   // Add-form state
   const [name, setName] = useState('');
@@ -50,6 +51,13 @@ function App() {
       })
       .catch(() => {});
   }, [fetchDevices]);
+
+  useEffect(() => {
+    if (!loading) {
+      const t = setTimeout(() => setInitialLoad(false), 800);
+      return () => clearTimeout(t);
+    }
+  }, [loading]);
 
   // ─── Add ─────────────────────────────────────────────────────────────────
   const handleAdd = async (e) => {
@@ -507,7 +515,7 @@ function App() {
                 <div 
                   key={dev.id} 
                   ref={el => { if (el) cardRefs.current.set(dev.id, el); else cardRefs.current.delete(dev.id); }}
-                  className="card edit-mode"
+                  className={`card edit-mode ${initialLoad ? 'animate-in' : ''}`}
                 >
                   <input
                     type="text"
@@ -548,7 +556,7 @@ function App() {
                 id={`card-${dev.id}`}
                 key={dev.id} 
                 ref={el => { if (el) cardRefs.current.set(dev.id, el); else cardRefs.current.delete(dev.id); }}
-                className={`card ${isBeingDragged && !isDropping ? 'dragging' : ''} ${isDropping && isBeingDragged ? 'dropping' : ''}`}
+                className={`card ${isBeingDragged && !isDropping ? 'dragging' : ''} ${isDropping && isBeingDragged ? 'dropping' : ''} ${initialLoad ? 'animate-in' : ''}`}
                 style={cardStyle}
               >
                 <div 
