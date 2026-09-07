@@ -252,18 +252,44 @@ async function main() {
     assert(!list.some(x => x.id === d.id), 'device still present');
   });
 
-  await test('POST /__smartproxy_api/logout clears Cloudflare and auth cookies', async () => {
+  await test('POST /__smartproxy_api/logout clears Cloudflare and auth cookies and returns teamLogoutUrl', async () => {
+    const fakeJwt = 'head.' + Buffer.from(JSON.stringify({
+      iss: 'https://thremburg.star.idp6.cloudflareaccess.com',
+      email: 'user@example.com'
+    })).toString('base64url') + '.sig';
+
     const res = await request(`${PROXY_BASE}/__smartproxy_api/logout`, {
       method: 'POST',
-      headers: { 'Cookie': 'CF_Authorization=some-token; sp_active_device=127.0.0.1' },
+      headers: { 'Cookie': `CF_Authorization=${fakeJwt}; sp_active_device=127.0.0.1` },
     });
     assert(res.status === 200, `status ${res.status}`);
+    const body = JSON.parse(res.body);
+    assert(body.success === true, 'body.success should be true');
+    assert(body.teamDomain === 'https://thremburg.cloudflareaccess.com', `wrong teamDomain: ${body.teamDomain}`);
+    assert(body.teamLogoutUrl === 'https://thremburg.cloudflareaccess.com/cdn-cgi/access/logout', `wrong teamLogoutUrl: ${body.teamLogoutUrl}`);
+
     const cookies = [res.headers['set-cookie']].flat().filter(Boolean);
     const cfCookie = cookies.find(c => c.startsWith('CF_Authorization='));
     assert(cfCookie, 'CF_Authorization clear cookie missing');
     assertIncludes(cfCookie, 'Expires=Thu, 01 Jan 1970', 'CF_Authorization expired');
     const spCookie = cookies.find(c => c.startsWith('sp_active_device='));
     assert(spCookie, 'sp_active_device clear cookie missing');
+  });
+
+  await test('GET /__smartproxy_api/auth returns team auth details from JWT', async () => {
+    const fakeJwt = 'head.' + Buffer.from(JSON.stringify({
+      iss: 'https://thremburg.cloudflareaccess.com',
+      email: 'user@example.com'
+    })).toString('base64url') + '.sig';
+
+    const res = await request(`${PROXY_BASE}/__smartproxy_api/auth`, {
+      headers: { 'Cookie': `CF_Authorization=${fakeJwt}` },
+    });
+    assert(res.status === 200, `status ${res.status}`);
+    const body = JSON.parse(res.body);
+    assert(body.teamDomain === 'https://thremburg.cloudflareaccess.com', 'wrong team domain');
+    assert(body.teamLogoutUrl === 'https://thremburg.cloudflareaccess.com/cdn-cgi/access/logout', 'wrong logout url');
+    assert(body.email === 'user@example.com', 'wrong email');
   });
 
   await test('GET /cdn-cgi/access/logout redirects and clears cookies', async () => {

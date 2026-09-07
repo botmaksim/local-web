@@ -37,7 +37,19 @@ function App() {
     }
   }, []);
 
-  useEffect(() => { fetchDevices(); }, [fetchDevices]);
+  const [teamLogoutUrl, setTeamLogoutUrl] = useState(null);
+
+  useEffect(() => {
+    fetchDevices();
+    fetch('/__smartproxy_api/auth')
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.teamLogoutUrl) {
+          setTeamLogoutUrl(data.teamLogoutUrl);
+        }
+      })
+      .catch(() => {});
+  }, [fetchDevices]);
 
   // ─── Add ─────────────────────────────────────────────────────────────────
   const handleAdd = async (e) => {
@@ -100,10 +112,15 @@ function App() {
     }
   };
 
+
   const handleLogout = async () => {
     setLoggingOut(true);
+    let logoutData = null;
     try {
-      await fetch('/__smartproxy_api/logout', { method: 'POST' });
+      const res = await fetch('/__smartproxy_api/logout', { method: 'POST' });
+      if (res.ok) {
+        logoutData = await res.json().catch(() => null);
+      }
     } catch (err) {
       console.error('Logout error:', err);
     }
@@ -124,8 +141,18 @@ function App() {
       console.error('Storage clear error:', err);
     }
 
+    try {
+      await fetch('/cdn-cgi/access/logout', { method: 'GET', credentials: 'include' }).catch(() => {});
+    } catch (_) {}
+
+    const resolvedTeamLogout = logoutData?.teamLogoutUrl || teamLogoutUrl;
     const returnTarget = encodeURIComponent(window.location.origin || '/');
-    window.location.href = `/cdn-cgi/access/logout?returnTo=${returnTarget}`;
+
+    if (resolvedTeamLogout) {
+      window.location.href = `${resolvedTeamLogout}?returnTo=${returnTarget}`;
+    } else {
+      window.location.href = `/cdn-cgi/access/logout?returnTo=${returnTarget}`;
+    }
   };
 
   // ─── Edit ─────────────────────────────────────────────────────────────────

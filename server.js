@@ -19,7 +19,7 @@ const fs           = require('fs');
 
 const devicesRouter    = require('./src/router');
 const { proxyRouter, proxy }  = require('./src/proxy');
-const { clearAuthCookies }    = require('./src/auth');
+const { clearAuthCookies, getAuthDetails } = require('./src/auth');
 
 // ---------------------------------------------------------------------------
 // App setup
@@ -42,9 +42,14 @@ app.use(cookieParser());
 // Proxied device responses carry their own CORS headers from the upstream.
 app.use('/__smartproxy_api/devices', express.json(), devicesRouter);
 
+app.get('/__smartproxy_api/auth', (req, res) => {
+    res.json(getAuthDetails(req));
+});
+
 app.post('/__smartproxy_api/logout', (req, res) => {
+    const authDetails = getAuthDetails(req);
     clearAuthCookies(req, res);
-    res.json({ success: true });
+    res.json({ success: true, ...authDetails });
 });
 
 // Cloudflare Access logout endpoint fallback (for local dev / direct origin access)

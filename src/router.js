@@ -15,7 +15,7 @@
 
 const express = require('express');
 const { getDevices, saveDevices, isValidIp, isBlockedIp } = require('./devices');
-const { clearAuthCookies } = require('./auth');
+const { clearAuthCookies, getAuthDetails } = require('./auth');
 
 const router = express.Router();
 
@@ -155,9 +155,14 @@ router.post('/:id/clear-cookies', (req, res) => {
     res.json({ success: true, cleared: clearedCount });
 });
 
+router.get('/auth', (req, res) => {
+    res.json(getAuthDetails(req));
+});
+
 router.post('/logout', (req, res) => {
+    const authDetails = getAuthDetails(req);
     clearAuthCookies(req, res);
-    res.json({ success: true });
+    res.json({ success: true, ...authDetails });
 });
 
 module.exports = router;
