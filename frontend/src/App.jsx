@@ -197,6 +197,7 @@ function App() {
   const [hoverIndex, setHoverIndex] = useState(null);
   const [dragTranslate, setDragTranslate] = useState({ x: 0, y: 0 });
   const [isDropping, setIsDropping] = useState(false);
+  const [isSettling, setIsSettling] = useState(false);
 
   const cardRefs = useRef(new Map());
   const dragRef = useRef({
@@ -346,6 +347,8 @@ function App() {
           setHoverIndex(null);
           setDragTranslate({ x: 0, y: 0 });
           setIsDropping(false);
+          setIsSettling(true);
+          setTimeout(() => setIsSettling(false), 50);
         }, 250);
       } else {
         dragRef.current = {
@@ -463,7 +466,7 @@ function App() {
           <span className="spinner large" />
         </div>
       ) : (
-        <div className="grid">
+        <div className={`grid ${isSettling ? 'settling' : ''}`}>
           {devices.map((dev, index) => {
             const targetUrl = `/${dev.ip}/`;
             const isBeingDragged = draggedId === dev.id;

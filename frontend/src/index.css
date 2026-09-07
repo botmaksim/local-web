@@ -323,6 +323,10 @@ header p {
   gap: 1.5rem;
 }
 
+.grid.settling .card {
+  transition: none !important;
+}
+
 /* ── Card ─────────────────────────────────────────────────── */
 .card {
   background: var(--card-bg);
