@@ -123,6 +123,13 @@ function App() {
 
   const handleLogout = async () => {
     setLoggingOut(true);
+    
+    // Open popup synchronously to bypass blockers. We will set its URL later.
+    const popup = window.open('about:blank', 'logoutPopup', 'width=400,height=400');
+    if (popup) {
+      popup.document.write('<h3 style="font-family:sans-serif; text-align:center; margin-top:50px;">Logging out from Cloudflare Access...</h3>');
+    }
+
     let logoutData = null;
     try {
       const res = await fetch('/__smartproxy_api/logout', { method: 'POST' });
@@ -154,12 +161,23 @@ function App() {
     } catch (_) {}
 
     const resolvedTeamLogout = logoutData?.teamLogoutUrl || teamLogoutUrl;
-    const returnTarget = encodeURIComponent(window.location.origin || '/');
+    const finalTarget = '/';
 
     if (resolvedTeamLogout) {
-      window.location.href = `${resolvedTeamLogout}?returnTo=${returnTarget}`;
+      if (popup) {
+        popup.location.href = resolvedTeamLogout;
+        // Wait for the popup to clear the team cookies, then close it and reload main window
+        setTimeout(() => {
+          popup.close();
+          window.location.href = finalTarget;
+        }, 1500);
+      } else {
+        // Fallback if popup was blocked
+        window.location.href = `${resolvedTeamLogout}?returnTo=${encodeURIComponent(window.location.origin + finalTarget)}`;
+      }
     } else {
-      window.location.href = `/cdn-cgi/access/logout?returnTo=${returnTarget}`;
+      if (popup) popup.close();
+      window.location.href = `/cdn-cgi/access/logout?returnTo=${encodeURIComponent(window.location.origin + finalTarget)}`;
     }
   };
 
