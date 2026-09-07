@@ -188,6 +188,7 @@ function App() {
   const [draggedId, setDraggedId] = useState(null);
   const [hoverIndex, setHoverIndex] = useState(null);
   const [dragTranslate, setDragTranslate] = useState({ x: 0, y: 0 });
+  const [isDropping, setIsDropping] = useState(false);
 
   const cardRefs = useRef(new Map());
   const dragRef = useRef({
@@ -292,35 +293,66 @@ function App() {
       const wasDragging = dragRef.current.isDragging;
       const fromIdx = dragRef.current.dragIndex;
       const toIdx = hoverIndexRef.current;
+      
+      dragRef.current.pointerId = null;
 
-      if (wasDragging && fromIdx !== null && toIdx !== null && fromIdx !== toIdx) {
-        const currentList = [...devicesRef.current];
-        const [movedItem] = currentList.splice(fromIdx, 1);
-        currentList.splice(toIdx, 0, movedItem);
+      if (wasDragging && fromIdx !== null) {
+        setIsDropping(true);
+        const finalIdx = toIdx !== null ? toIdx : fromIdx;
+        const fromRect = dragRef.current.slotRects[fromIdx];
+        const toRect = dragRef.current.slotRects[finalIdx];
+        
+        if (fromRect && toRect) {
+          const targetX = toRect.left - fromRect.left;
+          const targetY = toRect.top - fromRect.top;
+          setDragTranslate({ x: targetX, y: targetY });
+        }
+        
+        setTimeout(() => {
+          if (toIdx !== null && fromIdx !== toIdx) {
+            const currentList = [...devicesRef.current];
+            const [movedItem] = currentList.splice(fromIdx, 1);
+            currentList.splice(toIdx, 0, movedItem);
 
-        setDevices(currentList);
+            setDevices(currentList);
 
-        fetch(`${API_URL}/reorder`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(currentList.map(d => d.id)),
-        }).catch(err => {
-          setError('Failed to save order: ' + err.message);
-        });
+            fetch(`${API_URL}/reorder`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(currentList.map(d => d.id)),
+            }).catch(err => {
+              setError('Failed to save order: ' + err.message);
+            });
+          }
+
+          dragRef.current = {
+            isDragging: false,
+            pointerId: null,
+            startX: 0,
+            startY: 0,
+            cardId: null,
+            dragIndex: null,
+            slotRects: [],
+          };
+          setDraggedId(null);
+          setHoverIndex(null);
+          setDragTranslate({ x: 0, y: 0 });
+          setIsDropping(false);
+        }, 250);
+      } else {
+        dragRef.current = {
+          isDragging: false,
+          pointerId: null,
+          startX: 0,
+          startY: 0,
+          cardId: null,
+          dragIndex: null,
+          slotRects: [],
+        };
+        setDraggedId(null);
+        setHoverIndex(null);
+        setDragTranslate({ x: 0, y: 0 });
       }
-
-      dragRef.current = {
-        isDragging: false,
-        pointerId: null,
-        startX: 0,
-        startY: 0,
-        cardId: null,
-        dragIndex: null,
-        slotRects: [],
-      };
-      setDraggedId(null);
-      setHoverIndex(null);
-      setDragTranslate({ x: 0, y: 0 });
     };
 
     window.addEventListener('pointermove', handlePointerMove, { passive: false });
@@ -431,13 +463,13 @@ function App() {
             let cardStyle = {};
             if (isBeingDragged) {
               cardStyle = {
-                transform: `translate3d(${dragTranslate.x}px, ${dragTranslate.y}px, 0) scale(1.03)`,
+                transform: `translate3d(${dragTranslate.x}px, ${dragTranslate.y}px, 0) scale(${isDropping ? 1 : 1.03})`,
                 zIndex: 100,
                 opacity: 1,
-                boxShadow: '0 24px 50px rgba(0, 0, 0, 0.85), 0 0 30px rgba(170, 59, 255, 0.45)',
-                borderColor: 'var(--accent)',
-                backgroundColor: 'var(--card-bg-solid)',
-                transition: 'none',
+                boxShadow: isDropping ? '0 8px 32px var(--shadow-color)' : '0 24px 50px rgba(0, 0, 0, 0.85), 0 0 30px rgba(170, 59, 255, 0.45)',
+                borderColor: isDropping ? 'var(--card-border)' : 'var(--accent)',
+                backgroundColor: isDropping ? 'var(--card-bg)' : 'var(--card-bg-solid)',
+                transition: isDropping ? 'all 0.25s cubic-bezier(0.2, 0, 0, 1)' : 'none',
                 pointerEvents: 'none',
               };
             } else if (draggedId && hoverIndex !== null && dragRef.current.dragIndex !== null) {
@@ -516,7 +548,7 @@ function App() {
                 id={`card-${dev.id}`}
                 key={dev.id} 
                 ref={el => { if (el) cardRefs.current.set(dev.id, el); else cardRefs.current.delete(dev.id); }}
-                className={`card ${isBeingDragged ? 'dragging' : ''}`}
+                className={`card ${isBeingDragged && !isDropping ? 'dragging' : ''} ${isDropping && isBeingDragged ? 'dropping' : ''}`}
                 style={cardStyle}
               >
                 <div 
