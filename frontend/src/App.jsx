@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import './index.css';
 
 // In dev mode Vite proxies /__smartproxy_api → localhost:9091 (see vite.config.js)
@@ -184,67 +184,148 @@ function App() {
     }
   };
 
-  // ─── Drag & Drop ──────────────────────────────────────────────────────────
+  // ─── Drag & Drop (Pointer & Touch Friendly) ──────────────────────────────
   const [draggedId, setDraggedId] = useState(null);
-  const [dragOverId, setDragOverId] = useState(null);
+  const [hoverIndex, setHoverIndex] = useState(null);
+  const [dragTranslate, setDragTranslate] = useState({ x: 0, y: 0 });
 
-  const handleDragStart = (e, id) => {
-    setDraggedId(id);
-    e.dataTransfer.effectAllowed = 'move';
-    // Use a tiny timeout to allow the browser to capture the ghost image before applying styles
-    setTimeout(() => {
-      const el = document.getElementById(`card-${id}`);
-      if (el) el.classList.add('dragging');
-    }, 0);
-  };
+  const cardRefs = useRef(new Map());
+  const dragRef = useRef({
+    isDragging: false,
+    pointerId: null,
+    startX: 0,
+    startY: 0,
+    cardId: null,
+    dragIndex: null,
+    slotRects: [],
+  });
 
-  const handleDragEnd = (e, id) => {
-    setDraggedId(null);
-    setDragOverId(null);
-    const el = document.getElementById(`card-${id}`);
-    if (el) el.classList.remove('dragging');
-  };
+  const hoverIndexRef = useRef(null);
+  hoverIndexRef.current = hoverIndex;
 
-  const handleDragOver = (e, id) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    if (id !== dragOverId) {
-      setDragOverId(id);
-    }
-  };
+  const devicesRef = useRef(devices);
+  devicesRef.current = devices;
 
-  const handleDragLeave = (e, id) => {
-    if (dragOverId === id) {
-      setDragOverId(null);
-    }
-  };
+  const handlePointerDown = (e, id, index) => {
+    // Only primary mouse button or touch
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+    if (e.target.closest('button, a, input, select')) return;
 
-  const handleDrop = async (e, targetId) => {
-    e.preventDefault();
-    setDragOverId(null);
-    if (!draggedId || draggedId === targetId) return;
+    // Snapshot bounding rectangles for all card slots in the grid
+    const rects = devicesRef.current.map(d => {
+      const el = cardRefs.current.get(d.id);
+      if (!el) return { left: 0, top: 0, width: 0, height: 0, right: 0, bottom: 0 };
+      const r = el.getBoundingClientRect();
+      return {
+        id: d.id,
+        left: r.left,
+        top: r.top,
+        width: r.width,
+        height: r.height,
+        right: r.right,
+        bottom: r.bottom,
+      };
+    });
 
-    const oldIndex = devices.findIndex(d => d.id === draggedId);
-    const newIndex = devices.findIndex(d => d.id === targetId);
-    if (oldIndex === -1 || newIndex === -1) return;
+    dragRef.current = {
+      isDragging: false,
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      cardId: id,
+      dragIndex: index,
+      slotRects: rects,
+    };
 
-    const newDevices = [...devices];
-    const [movedItem] = newDevices.splice(oldIndex, 1);
-    newDevices.splice(newIndex, 0, movedItem);
+    const handlePointerMove = (moveEvent) => {
+      if (moveEvent.pointerId !== dragRef.current.pointerId) return;
 
-    setDevices(newDevices);
+      const deltaX = moveEvent.clientX - dragRef.current.startX;
+      const deltaY = moveEvent.clientY - dragRef.current.startY;
 
-    try {
-      const res = await fetch(`${API_URL}/reorder`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newDevices.map(d => d.id)),
-      });
-      if (!res.ok) throw new Error('Failed to save order');
-    } catch (err) {
-      setError(err.message);
-      fetchDevices(); // revert on error
-    }
+      // Require threshold to distinguish intent from tap
+      if (!dragRef.current.isDragging) {
+        if (Math.hypot(deltaX, deltaY) < 6) return;
+        dragRef.current.isDragging = true;
+        setDraggedId(dragRef.current.cardId);
+        setHoverIndex(dragRef.current.dragIndex);
+      }
+
+      setDragTranslate({ x: deltaX, y: deltaY });
+
+      const { slotRects, dragIndex } = dragRef.current;
+      if (!slotRects || slotRects.length === 0) return;
+
+      let closestIdx = dragIndex;
+      let minDistance = Infinity;
+
+      for (let i = 0; i < slotRects.length; i++) {
+        const r = slotRects[i];
+        if (
+          moveEvent.clientX >= r.left &&
+          moveEvent.clientX <= r.right &&
+          moveEvent.clientY >= r.top &&
+          moveEvent.clientY <= r.bottom
+        ) {
+          closestIdx = i;
+          break;
+        }
+        const cx = r.left + r.width / 2;
+        const cy = r.top + r.height / 2;
+        const dist = Math.hypot(moveEvent.clientX - cx, moveEvent.clientY - cy);
+        if (dist < minDistance) {
+          minDistance = dist;
+          closestIdx = i;
+        }
+      }
+
+      setHoverIndex(closestIdx);
+    };
+
+    const handlePointerUp = (upEvent) => {
+      if (upEvent.pointerId !== dragRef.current.pointerId) return;
+
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+
+      const wasDragging = dragRef.current.isDragging;
+      const fromIdx = dragRef.current.dragIndex;
+      const toIdx = hoverIndexRef.current;
+
+      if (wasDragging && fromIdx !== null && toIdx !== null && fromIdx !== toIdx) {
+        const currentList = [...devicesRef.current];
+        const [movedItem] = currentList.splice(fromIdx, 1);
+        currentList.splice(toIdx, 0, movedItem);
+
+        setDevices(currentList);
+
+        fetch(`${API_URL}/reorder`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(currentList.map(d => d.id)),
+        }).catch(err => {
+          setError('Failed to save order: ' + err.message);
+        });
+      }
+
+      dragRef.current = {
+        isDragging: false,
+        pointerId: null,
+        startX: 0,
+        startY: 0,
+        cardId: null,
+        dragIndex: null,
+        slotRects: [],
+      };
+      setDraggedId(null);
+      setHoverIndex(null);
+      setDragTranslate({ x: 0, y: 0 });
+    };
+
+    window.addEventListener('pointermove', handlePointerMove, { passive: false });
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
   };
 
   // ─── Render ───────────────────────────────────────────────────────────────
@@ -343,12 +424,59 @@ function App() {
         </div>
       ) : (
         <div className="grid">
-          {devices.map(dev => {
+          {devices.map((dev, index) => {
             const targetUrl = `/${dev.ip}/`;
+            const isBeingDragged = draggedId === dev.id;
+
+            let cardStyle = {};
+            if (isBeingDragged) {
+              cardStyle = {
+                transform: `translate3d(${dragTranslate.x}px, ${dragTranslate.y}px, 0) scale(1.03)`,
+                zIndex: 100,
+                opacity: 1,
+                boxShadow: '0 24px 50px rgba(0, 0, 0, 0.85), 0 0 30px rgba(170, 59, 255, 0.45)',
+                borderColor: 'var(--accent)',
+                backgroundColor: 'var(--card-bg-solid)',
+                transition: 'none',
+                pointerEvents: 'none',
+              };
+            } else if (draggedId && hoverIndex !== null && dragRef.current.dragIndex !== null) {
+              const dragIdx = dragRef.current.dragIndex;
+              const targetHover = hoverIndex;
+              let targetSlot = index;
+
+              if (targetHover > dragIdx && index > dragIdx && index <= targetHover) {
+                targetSlot = index - 1;
+              } else if (targetHover < dragIdx && index >= targetHover && index < dragIdx) {
+                targetSlot = index + 1;
+              }
+
+              const { slotRects } = dragRef.current;
+              if (slotRects && slotRects[index] && slotRects[targetSlot]) {
+                const currentRect = slotRects[index];
+                const targetRect = slotRects[targetSlot];
+                const dx = targetRect.left - currentRect.left;
+                const dy = targetRect.top - currentRect.top;
+                if (dx !== 0 || dy !== 0) {
+                  cardStyle = {
+                    transform: `translate3d(${dx}px, ${dy}px, 0)`,
+                    transition: 'transform 0.25s cubic-bezier(0.2, 0, 0, 1)',
+                  };
+                } else {
+                  cardStyle = {
+                    transition: 'transform 0.25s cubic-bezier(0.2, 0, 0, 1)',
+                  };
+                }
+              }
+            }
 
             if (editingId === dev.id) {
               return (
-                <div key={dev.id} className="card edit-mode">
+                <div 
+                  key={dev.id} 
+                  ref={el => { if (el) cardRefs.current.set(dev.id, el); else cardRefs.current.delete(dev.id); }}
+                  className="card edit-mode"
+                >
                   <input
                     type="text"
                     value={editName}
@@ -387,16 +515,19 @@ function App() {
               <div 
                 id={`card-${dev.id}`}
                 key={dev.id} 
-                className={`card ${dragOverId === dev.id ? 'drag-over' : ''}`}
-                draggable
-                onDragStart={(e) => handleDragStart(e, dev.id)}
-                onDragEnd={(e) => handleDragEnd(e, dev.id)}
-                onDragOver={(e) => handleDragOver(e, dev.id)}
-                onDragLeave={(e) => handleDragLeave(e, dev.id)}
-                onDrop={(e) => handleDrop(e, dev.id)}
+                ref={el => { if (el) cardRefs.current.set(dev.id, el); else cardRefs.current.delete(dev.id); }}
+                className={`card ${isBeingDragged ? 'dragging' : ''}`}
+                style={cardStyle}
               >
-                <div className="card-header">
-                  <h3 title="Зажмите и потяните для изменения порядка" className="drag-handle">{dev.name}</h3>
+                <div 
+                  className="card-header drag-handle"
+                  onPointerDown={(e) => handlePointerDown(e, dev.id, index)}
+                  title="Потяните для изменения порядка"
+                >
+                  <div className="card-title-group">
+                    <span className="drag-grip" aria-hidden="true">⠿</span>
+                    <h3>{dev.name}</h3>
+                  </div>
                   <span className={`badge badge-${dev.protocol || 'http'}`}>
                     {dev.protocol || 'http'}
                   </span>
