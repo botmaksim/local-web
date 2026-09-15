@@ -35,9 +35,12 @@ const escapeRegex = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  * @param {string} targetIp
  * @returns {string}  e.g. "https://proxy.example.com/192.168.100.10"
  */
-function proxyBaseUrl(req, targetIp) {
+function proxyBaseUrl(req, targetIp, isHostTarget = false) {
     const proto = req.headers['x-forwarded-proto'] || req.protocol || 'http';
     const host  = req.headers.host;
+    if (isHostTarget || req.isHostTarget) {
+        return `${proto}://${host}`;
+    }
     return `${proto}://${host}/${targetIp}`;
 }
 
@@ -112,11 +115,16 @@ function replaceAbsoluteUrls(text, targetIp, req) {
     // 4. Base64-encoded JSON state parameter (Home Assistant OAuth)
     out = rewriteBase64State(out, targetIp, proxyBase);
 
-    // 5. Inline JS root redirects: location.href = "/" → location.href = "/{ip}/"
-    out = out.replace(
-        /(location\.href|location\.replace|location\.assign|window\.location|top\.location\.href|top\.location|parent\.location|window\.top\.location)\s*(=|\()\s*(['"])\/(["'])/g,
-        `$1$2$3/${targetIp}/$4`
-    );
+    if (!req.isHostTarget) {
+        // 5. Inline JS root redirects: location.href = "/" → location.href = "/{ip}/"
+        out = out.replace(
+            /(location\.href|location\.replace|location\.assign|window\.location|top\.location\.href|top\.location|parent\.location|window\.top\.location)\s*(=|\()\s*(['"])\/(["'])/g,
+            `$1$2$3/${targetIp}/$4`
+        );
+    }
+
+    // Strip Cloudflare Web Analytics beacon script if injected to prevent SRI hash mismatch errors
+    out = out.replace(/<script[^>]*static\.cloudflareinsights\.com[^>]*><\/script>/gi, '');
 
     return out;
 }
@@ -205,14 +213,14 @@ function rewriteRequestBody(body, proxyBase, targetBase, proxyOrigin = '') {
  * @param {string} proxyBase
  * @returns {string}
  */
-function rewriteLocationHeader(loc, targetIp, targetProto, proxyBase) {
+function rewriteLocationHeader(loc, targetIp, targetProto, proxyBase, isHostTarget = false) {
     const absRe = new RegExp(`^https?://${escapeRegex(targetIp)}(:[0-9]+)?`);
 
     // Absolute self-URL → proxyBase
     loc = loc.replace(absRe, proxyBase);
 
-    // Relative URL without device prefix → prepend /{targetIp}
-    if (loc.startsWith('/') && !loc.startsWith(`/${targetIp}`)) {
+    // Relative URL without device prefix → prepend /{targetIp} ONLY if not hostTarget
+    if (!isHostTarget && loc.startsWith('/') && !loc.startsWith(`/${targetIp}`)) {
         loc = `/${targetIp}${loc}`;
     }
 

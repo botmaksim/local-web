@@ -117,4 +117,52 @@ function extractTargetFromUrl(url, devices) {
     return { ip: segment, protocol: device.protocol || 'http' };
 }
 
-module.exports = { getDevices, saveDevices, isValidIp, isBlockedIp, extractTargetFromUrl };
+/**
+ * Match a device based on the incoming Host header (subdomain, custom domain, or single device).
+ * @param {string} hostHeader
+ * @param {Array} devices
+ * @returns {object | null}
+ */
+function matchDeviceByHost(hostHeader, devices) {
+    if (!hostHeader || !devices || !devices.length) return null;
+    const host = hostHeader.split(':')[0].toLowerCase();
+
+    // Skip loopback, local, or raw IP hosts
+    if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || isValidIp(host)) {
+        return null;
+    }
+
+    const validDevices = devices.filter(d => isValidIp(d.ip));
+    if (!validDevices.length) return null;
+
+    // 1. Exact match on device.host or device.domain if defined
+    for (const d of validDevices) {
+        if (d.host && (host === d.host.toLowerCase() || host.endsWith('.' + d.host.toLowerCase()))) {
+            return d;
+        }
+    }
+
+    // 2. Subdomain match against device name
+    // e.g. "huawei-web.mybox.online" -> subdomain "huawei-web"
+    const subdomains = host.split('.');
+    if (subdomains.length >= 2) {
+        const subdomainPart = subdomains[0].toLowerCase();
+        const normSub = subdomainPart.replace(/[^a-z0-9]/g, '');
+        for (const d of validDevices) {
+            if (!d.name) continue;
+            const normName = d.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+            if (normName && (normSub.includes(normName) || normName.includes(normSub))) {
+                return d;
+            }
+        }
+    }
+
+    // 3. If there is only ONE valid registered device and accessing via a custom domain
+    if (validDevices.length === 1) {
+        return validDevices[0];
+    }
+
+    return null;
+}
+
+module.exports = { getDevices, saveDevices, isValidIp, isBlockedIp, extractTargetFromUrl, matchDeviceByHost };

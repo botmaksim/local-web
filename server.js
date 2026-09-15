@@ -75,6 +75,15 @@ app.use(express.static(FRONTEND_DIST));
 
 app.use((req, res, next) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+
+    // Do NOT serve SPA fallback for non-HTML files or backend API/device paths
+    if (/\.(asp|cgi|php|xml|json|png|jpg|jpeg|gif|svg|ico|css|js|map)$/i.test(req.path)) {
+        return res.status(404).send('Not Found');
+    }
+    if (/^\/(api|html|cgi-bin|webserver)\//i.test(req.path)) {
+        return res.status(404).send('Not Found');
+    }
+
     const indexPath = path.join(FRONTEND_DIST, 'index.html');
     if (fs.existsSync(indexPath)) {
         res.sendFile(indexPath);

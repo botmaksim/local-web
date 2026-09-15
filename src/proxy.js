@@ -26,7 +26,7 @@ const path    = require('path');
 const fs      = require('fs');
 const { PassThrough }          = require('node:stream');
 const { createProxyMiddleware } = require('http-proxy-middleware');
-const { getDevices, extractTargetFromUrl, isValidIp } = require('./devices');
+const { getDevices, extractTargetFromUrl, isValidIp, matchDeviceByHost } = require('./devices');
 const {
     escapeRegex,
     proxyBaseUrl,
@@ -73,6 +73,13 @@ const STRIP_HEADERS = [
 function resolveDevice(req, devices) {
     if (!devices || !devices.length) return null;
 
+    // 0. Subdomain / Host-based matching (e.g. huawei-web.mybox.online)
+    const hostDevice = matchDeviceByHost(req.headers.host, devices);
+    if (hostDevice) {
+        req.isHostTarget = true;
+        return hostDevice;
+    }
+
     // 1. Direct URL path: /{ip}/...
     const url = req.originalUrl || req.url || '';
     const directTarget = extractTargetFromUrl(url, devices);
@@ -82,11 +89,14 @@ function resolveDevice(req, devices) {
     const sourceUrl = req.headers.referer || req.headers.origin;
     if (sourceUrl) {
         try {
-            const refSegment = new URL(sourceUrl).pathname.split('/').filter(Boolean)[0] || '';
+            const parsed = new URL(sourceUrl);
+            const refSegment = parsed.pathname.split('/').filter(Boolean)[0] || '';
             if (isValidIp(refSegment)) {
-                const match = devices.find(d => d.ip === refSegment);
+                const match = devices.find(d => d.ip === refSegment || d.ip.split(':')[0] === refSegment.split(':')[0]);
                 if (match) return match;
             }
+            const refHostDevice = matchDeviceByHost(parsed.host, devices);
+            if (refHostDevice) return refHostDevice;
         } catch { /* ignore malformed URLs */ }
     }
 
@@ -97,9 +107,21 @@ function resolveDevice(req, devices) {
         if (match) cookieIp = match[1];
     }
 
-    if (cookieIp && isValidIp(cookieIp)) {
-        const match = devices.find(d => d.ip === cookieIp);
-        if (match) return match;
+    if (cookieIp) {
+        try { cookieIp = decodeURIComponent(cookieIp); } catch {}
+        if (isValidIp(cookieIp)) {
+            const match = devices.find(d => d.ip === cookieIp || d.ip.split(':')[0] === cookieIp.split(':')[0]);
+            if (match) return match;
+        }
+    }
+
+    // 4. Device path heuristic: if this is a request to a device-like path (.asp, .cgi, .php, /api/, /html/)
+    // and there is only 1 valid device registered
+    const isDevicePath = /\.(asp|cgi|php|xml|json)($|\?)/i.test(req.path) ||
+                         /^\/(html|cgi-bin|webserver|api)\//i.test(req.path);
+    const validDevices = devices.filter(d => isValidIp(d.ip));
+    if (isDevicePath && validDevices.length === 1) {
+        return validDevices[0];
     }
 
     return null;
@@ -227,7 +249,8 @@ const proxy = createProxyMiddleware({
             }
 
             const { ip: targetIp, protocol: targetProtocol } = target;
-            const proxyBase = proxyBaseUrl(req, targetIp);
+            const isHostTarget = req.isHostTarget || false;
+            const proxyBase = proxyBaseUrl(req, targetIp, isHostTarget);
 
             log('PROXY', `${req.method} ${req.originalUrl} → ${proxyRes.statusCode}`);
 
@@ -236,7 +259,7 @@ const proxy = createProxyMiddleware({
             // Rewrite Location header on redirects.
             if (headers['location']) {
                 headers['location'] = rewriteLocationHeader(
-                    headers['location'], targetIp, targetProtocol, proxyBase
+                    headers['location'], targetIp, targetProtocol, proxyBase, isHostTarget
                 );
             }
 
@@ -247,7 +270,9 @@ const proxy = createProxyMiddleware({
             const deviceCookies = headers['set-cookie']
                 ? rewriteCookies(headers['set-cookie'], targetIp)
                 : [];
-            const spCookie = `sp_active_device=${targetIp}; Path=/; Max-Age=2592000; SameSite=Lax`;
+            const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
+            const secureFlag = isHttps ? '; Secure' : '';
+            const spCookie = `sp_active_device=${targetIp}; Path=/; Max-Age=2592000; SameSite=Lax${secureFlag}`;
             headers['set-cookie'] = [...deviceCookies, spCookie];
 
             // Always remove transfer-encoding — Node's http client already de-chunks,
@@ -375,9 +400,19 @@ function proxyRouter(req, res, next) {
     if (device) {
         // Let the SPA handle the root dashboard and its own static files.
         if (req.method === 'GET') {
-            if (req.path === '/') return next();
+            const hasDeviceReferer = req.headers.referer && (
+                req.headers.referer.includes(`/${device.ip}`) ||
+                matchDeviceByHost(new URL(req.headers.referer, 'http://localhost').host, devices)
+            );
+
+            if (req.path === '/' && !hasDeviceReferer && !req.isHostTarget) {
+                return next();
+            }
+
             const staticPath = path.join(FRONTEND_DIST, req.path);
-            if (fs.existsSync(staticPath)) return next();
+            if (!req.isHostTarget && fs.existsSync(staticPath) && req.path !== '/') {
+                return next();
+            }
         }
 
         // Route to the device: prepend /{ip} so pathRewrite can strip it.
