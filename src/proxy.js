@@ -191,6 +191,24 @@ const proxy = createProxyMiddleware({
             if (!target) return;
 
             const { ip: targetIp, protocol: targetProtocol } = target;
+
+            // Check for device switch to prevent cookie collision 403s.
+            // If the browser's active device doesn't match the target, strip the Cookie header.
+            // This ensures the new router receives a clean request instead of the previous router's
+            // session cookies (which share names like `sysauth` or `Cookie`), preventing 403s.
+            let cookieIp = req.cookies?.sp_active_device;
+            if (!cookieIp && req.headers.cookie) {
+                const match = req.headers.cookie.match(/(?:^|;\s*)sp_active_device=([^;]+)/);
+                if (match) cookieIp = match[1];
+            }
+            if (cookieIp) {
+                try { cookieIp = decodeURIComponent(cookieIp); } catch {}
+            }
+            if (!cookieIp || cookieIp !== targetIp) {
+                proxyReq.removeHeader('cookie');
+                log('DEBUG', `Device switch (${cookieIp || 'none'} -> ${targetIp}), stripped cookies to prevent collisions.`);
+            }
+
             const targetBase = `${targetProtocol}://${targetIp}`;
             const proxyBase  = proxyBaseUrl(req, targetIp);
             const proxyOrigin = proxyBaseUrl(req, '').replace(/\/$/, '');
