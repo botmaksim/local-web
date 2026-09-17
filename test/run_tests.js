@@ -33,6 +33,12 @@ const HUAWEI_PORT   = 8082;
 const HUAWEI_IP     = `127.0.0.1:${HUAWEI_PORT}`;
 const OPENWRT_PORT  = 8083;
 const OPENWRT_IP    = `127.0.0.1:${OPENWRT_PORT}`;
+const TPLINK1_PORT  = 8084;
+const TPLINK1_IP    = `127.0.0.1:${TPLINK1_PORT}`;
+const TPLINK1_TOKEN = `TPLINK_SESSION_${TPLINK1_PORT}`;
+const TPLINK2_PORT  = 8085;
+const TPLINK2_IP    = `127.0.0.1:${TPLINK2_PORT}`;
+const TPLINK2_TOKEN = `TPLINK_SESSION_${TPLINK2_PORT}`;
 const PROXY_BASE    = `http://127.0.0.1:${PROXY_PORT}`;
 
 const SPAWN_MODE  = process.argv.includes('--spawn');
@@ -138,16 +144,21 @@ async function main() {
     dummyRouterServer = spawn('node', [path.join(__dirname, 'dummy_router.js')], { stdio: 'inherit', env: { ...process.env, ALLOW_LOOPBACK: 'true' } });
     const huaweiServer  = spawn('node', [path.join(__dirname, 'huawei_router.js')],  { stdio: 'inherit', env: { ...process.env, HUAWEI_PORT: String(HUAWEI_PORT) } });
     const openwrtServer = spawn('node', [path.join(__dirname, 'openwrt_router.js')], { stdio: 'inherit', env: { ...process.env, OPENWRT_PORT: String(OPENWRT_PORT) } });
+    const tplink1Server = spawn('node', [path.join(__dirname, 'tplink_router.js')],  { stdio: 'inherit', env: { ...process.env, TPLINK_PORT: String(TPLINK1_PORT), TPLINK_TOKEN: TPLINK1_TOKEN } });
+    const tplink2Server = spawn('node', [path.join(__dirname, 'tplink_router.js')],  { stdio: 'inherit', env: { ...process.env, TPLINK_PORT: String(TPLINK2_PORT), TPLINK_TOKEN: TPLINK2_TOKEN } });
     proxyServer = spawn('node', [path.join(__dirname, '../server.js')], { stdio: 'inherit', env: { ...process.env, ALLOW_LOOPBACK: 'true' } });
 
     // register for cleanup
-    if (!deviceServer._extraServers) deviceServer._extraServers = [huaweiServer, openwrtServer];
+    if (!deviceServer._extraServers) deviceServer._extraServers = [];
+    deviceServer._extraServers.push(huaweiServer, openwrtServer, tplink1Server, tplink2Server);
 
     await Promise.all([
       waitForPort(DEVICE_PORT),
       waitForPort(8080),
       waitForPort(HUAWEI_PORT),
       waitForPort(OPENWRT_PORT),
+      waitForPort(TPLINK1_PORT),
+      waitForPort(TPLINK2_PORT),
       waitForPort(PROXY_PORT),
     ]);
     console.log('[setup] Servers ready.\n');
@@ -927,10 +938,57 @@ async function main() {
     assertIncludes(decodeURIComponent(sp), HUAWEI_IP, 'sp_active_device must point to Huawei IP');
   });
 
+  // ── TP-Link Multi-Instance Isolation ─────────────────────────────────────
+  console.log('\n── TP-Link Identical Cookie Isolation ───────────');
+
+  let tp1Device, tp2Device;
+  await test('Register TP-Link devices', async () => {
+    tp1Device = await addDevice('TP-Link 1', TPLINK1_IP, 'http');
+    tp2Device = await addDevice('TP-Link 2', TPLINK2_IP, 'http');
+    assert(tp1Device.id && tp2Device.id, 'missing ids');
+  });
+
+  await test('TP-Link 1: POST /login.htm → sets Authorization cookie', async () => {
+    const res = await request(`${PROXY_BASE}/${TPLINK1_IP}/login.htm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'username=admin&password=admin',
+    });
+    assert(res.status === 302, `expected 302, got ${res.status}`);
+    const cookies = [res.headers['set-cookie']].flat().filter(Boolean);
+    assert(cookies.some(c => c.includes(`Authorization=${TPLINK1_TOKEN}`)), 'TPLINK1 auth missing');
+  });
+
+  await test('TP-Link 2: POST /login.htm → sets Authorization cookie (same name, diff value)', async () => {
+    const res = await request(`${PROXY_BASE}/${TPLINK2_IP}/login.htm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'username=admin&password=admin',
+    });
+    assert(res.status === 302, `expected 302, got ${res.status}`);
+    const cookies = [res.headers['set-cookie']].flat().filter(Boolean);
+    assert(cookies.some(c => c.includes(`Authorization=${TPLINK2_TOKEN}`)), 'TPLINK2 auth missing');
+  });
+
+  await test('TP-Link: switching devices prevents Auth cookie bleed', async () => {
+    // Send browser's jar containing BOTH auth tokens to TP-Link 1.
+    // Proxy MUST clear the cookies if sp_active_device points to TP-Link 2.
+    const cookie = `Authorization=${TPLINK1_TOKEN}; Authorization=${TPLINK2_TOKEN}; sp_active_device=${encodeURIComponent(TPLINK2_IP)}`;
+    
+    // We send request to TP-Link 1. Since sp_active_device points to TP-Link 2, the proxy must clear cookies!
+    const res = await request(`${PROXY_BASE}/${TPLINK1_IP}/admin/index`, {
+      headers: { Cookie: cookie },
+    });
+    // Expected 401 Unauthorized because proxy cleared the auth cookie to prevent bleeding TP2's auth to TP1.
+    assert(res.status === 401, `expected 401 (cookies stripped), got ${res.status}`);
+  });
+
   // ── Cleanup ───────────────────────────────────────────────────────────────
   await deleteDevice(createdDevice.id);
   if (huaweiDevice)  await deleteDevice(huaweiDevice.id);
   if (openwrtDevice) await deleteDevice(openwrtDevice.id);
+  if (tp1Device) await deleteDevice(tp1Device.id);
+  if (tp2Device) await deleteDevice(tp2Device.id);
 
   // ── Summary ───────────────────────────────────────────────────────────────
   console.log('\n═══════════════════════════════════════════════');
