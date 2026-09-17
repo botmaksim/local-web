@@ -92,7 +92,13 @@ function resolveDevice(req, devices) {
             const parsed = new URL(sourceUrl);
             const refSegment = parsed.pathname.split('/').filter(Boolean)[0] || '';
             if (isValidIp(refSegment)) {
-                const match = devices.find(d => d.ip === refSegment || d.ip.split(':')[0] === refSegment.split(':')[0]);
+                // Exact match first; fall back to base-IP only when segment has no port,
+                // so that 127.0.0.1:8082 never matches a device at 127.0.0.1:8083.
+                const segHasPort = refSegment.includes(':');
+                const match = devices.find(d =>
+                    d.ip === refSegment ||
+                    (!segHasPort && d.ip.split(':')[0] === refSegment)
+                );
                 if (match) return match;
             }
             const refHostDevice = matchDeviceByHost(parsed.host, devices);
@@ -110,7 +116,12 @@ function resolveDevice(req, devices) {
     if (cookieIp) {
         try { cookieIp = decodeURIComponent(cookieIp); } catch {}
         if (isValidIp(cookieIp)) {
-            const match = devices.find(d => d.ip === cookieIp || d.ip.split(':')[0] === cookieIp.split(':')[0]);
+            // Exact match first; only fall back to base-IP when cookieIp has no port.
+            const cookieHasPort = cookieIp.includes(':');
+            const match = devices.find(d =>
+                d.ip === cookieIp ||
+                (!cookieHasPort && d.ip.split(':')[0] === cookieIp)
+            );
             if (match) return match;
         }
     }

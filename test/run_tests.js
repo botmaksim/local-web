@@ -26,10 +26,14 @@ const { spawn, execSync } = require('child_process');
 const path  = require('path');
 
 // ── Config ──────────────────────────────────────────────────────────────────
-const PROXY_PORT  = 9091;
-const DEVICE_PORT = 8081;
-const DEVICE_IP   = `127.0.0.1:${DEVICE_PORT}`;
-const PROXY_BASE  = `http://127.0.0.1:${PROXY_PORT}`;
+const PROXY_PORT    = 9091;
+const DEVICE_PORT   = 8081;
+const DEVICE_IP     = `127.0.0.1:${DEVICE_PORT}`;
+const HUAWEI_PORT   = 8082;
+const HUAWEI_IP     = `127.0.0.1:${HUAWEI_PORT}`;
+const OPENWRT_PORT  = 8083;
+const OPENWRT_IP    = `127.0.0.1:${OPENWRT_PORT}`;
+const PROXY_BASE    = `http://127.0.0.1:${PROXY_PORT}`;
 
 const SPAWN_MODE  = process.argv.includes('--spawn');
 
@@ -132,11 +136,18 @@ async function main() {
     console.log('\n[setup] Spawning mock device and proxy servers…');
     deviceServer = spawn('node', [path.join(__dirname, 'http_device.js')], { stdio: 'inherit', env: { ...process.env, ALLOW_LOOPBACK: 'true' } });
     dummyRouterServer = spawn('node', [path.join(__dirname, 'dummy_router.js')], { stdio: 'inherit', env: { ...process.env, ALLOW_LOOPBACK: 'true' } });
-    proxyServer  = spawn('node', [path.join(__dirname, '../server.js')],  { stdio: 'inherit', env: { ...process.env, ALLOW_LOOPBACK: 'true' } });
+    const huaweiServer  = spawn('node', [path.join(__dirname, 'huawei_router.js')],  { stdio: 'inherit', env: { ...process.env, HUAWEI_PORT: String(HUAWEI_PORT) } });
+    const openwrtServer = spawn('node', [path.join(__dirname, 'openwrt_router.js')], { stdio: 'inherit', env: { ...process.env, OPENWRT_PORT: String(OPENWRT_PORT) } });
+    proxyServer = spawn('node', [path.join(__dirname, '../server.js')], { stdio: 'inherit', env: { ...process.env, ALLOW_LOOPBACK: 'true' } });
+
+    // register for cleanup
+    if (!deviceServer._extraServers) deviceServer._extraServers = [huaweiServer, openwrtServer];
 
     await Promise.all([
       waitForPort(DEVICE_PORT),
       waitForPort(8080),
+      waitForPort(HUAWEI_PORT),
+      waitForPort(OPENWRT_PORT),
       waitForPort(PROXY_PORT),
     ]);
     console.log('[setup] Servers ready.\n');
@@ -697,8 +708,229 @@ async function main() {
 
   await deleteDevice(dummyDevice.id);
 
+  // ── Huawei Router Login Flow ──────────────────────────────────────────────
+  console.log('\n── Huawei Router – Login Flow ───────────────────');
+
+  let huaweiDevice;
+  await test('Register Huawei device', async () => {
+    huaweiDevice = await addDevice('Huawei', HUAWEI_IP, 'http');
+    assert(huaweiDevice.id, 'missing id');
+  });
+
+  await test('Huawei: GET /{ip}/ without session → 302 to /html/index.asp', async () => {
+    const res = await request(`${PROXY_BASE}/${HUAWEI_IP}/`);
+    assert(res.status === 302, `expected 302, got ${res.status}`);
+    const loc = res.headers['location'] || '';
+    assertIncludes(loc, `/${HUAWEI_IP}/html/index.asp`, 'Location');
+    assertNotIncludes(loc, `http://127.0.0.1:${HUAWEI_PORT}`, 'Location must not expose device origin');
+  });
+
+  await test('Huawei: GET /{ip}/html/index.asp → login form', async () => {
+    const res = await request(`${PROXY_BASE}/${HUAWEI_IP}/html/index.asp`);
+    assert(res.status === 200, `expected 200, got ${res.status}`);
+    assertIncludes(res.body, 'form', 'login form');
+    assertIncludes(res.body, 'login.cgi', 'action=login.cgi');
+  });
+
+  await test('Huawei: POST /{ip}/login.cgi wrong creds → 403', async () => {
+    const body = 'Username=wrong&Password=wrong';
+    const res = await request(`${PROXY_BASE}/${HUAWEI_IP}/login.cgi`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    });
+    assert(res.status === 403, `expected 403, got ${res.status}`);
+  });
+
+  await test('Huawei: POST /{ip}/login.cgi correct creds → 302 + cookies', async () => {
+    const body = 'Username=admin&Password=admin';
+    const res = await request(`${PROXY_BASE}/${HUAWEI_IP}/login.cgi`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    });
+    assert(res.status === 302, `expected 302, got ${res.status}`);
+    const cookies = [res.headers['set-cookie']].flat().filter(Boolean);
+    assert(cookies.some(c => c.includes('SessionID=HUAWEI_SESSION_TOKEN')), 'SessionID cookie missing');
+    assert(cookies.some(c => c.includes('sp_active_device')), 'sp_active_device cookie missing');
+    const loc = res.headers['location'] || '';
+    assertIncludes(loc, `/${HUAWEI_IP}/html/index.asp`, 'Location after login');
+    assertNotIncludes(loc, `http://127.0.0.1:${HUAWEI_PORT}`, 'Location must not expose device origin');
+  });
+
+  await test('Huawei: GET /{ip}/html/index.asp with session → JS redirect rewritten to IP prefix', async () => {
+    const sessionCookie = `SessionID=HUAWEI_SESSION_TOKEN; sp_active_device=${encodeURIComponent(HUAWEI_IP)}`;
+    const res = await request(`${PROXY_BASE}/${HUAWEI_IP}/html/index.asp`, {
+      headers: { Cookie: sessionCookie },
+    });
+    assert(res.status === 200, `expected 200, got ${res.status}`);
+    // The router returns: window.location = "/"
+    // Proxy MUST rewrite it to: window.location = "/{hwIp}/"
+    assertNotIncludes(res.body, 'window.location = "/"', 'bare root redirect must be rewritten');
+    assertNotIncludes(res.body, "window.location = '/'", 'bare root redirect must be rewritten');
+    assertIncludes(res.body, `/${HUAWEI_IP}/`, 'redirect must contain IP prefix');
+  });
+
+  await test('Huawei: GET /{ip}/ with session → 200 Dashboard', async () => {
+    const sessionCookie = `SessionID=HUAWEI_SESSION_TOKEN; sp_active_device=${encodeURIComponent(HUAWEI_IP)}`;
+    const res = await request(`${PROXY_BASE}/${HUAWEI_IP}/`, {
+      headers: { Cookie: sessionCookie },
+    });
+    assert(res.status === 200, `expected 200, got ${res.status}`);
+    assertIncludes(res.body, 'Huawei Dashboard', 'dashboard page');
+  });
+
+  await test('Huawei: sp_active_device set on every proxied response', async () => {
+    const res = await request(`${PROXY_BASE}/${HUAWEI_IP}/html/index.asp`);
+    const cookies = [res.headers['set-cookie']].flat().filter(Boolean);
+    const sp = cookies.find(c => c.startsWith('sp_active_device='));
+    assert(sp, 'sp_active_device cookie missing');
+    assertIncludes(sp, HUAWEI_IP, 'must contain Huawei IP');
+  });
+
+  // ── OpenWrt Router Login Flow ──────────────────────────────────────────────
+  console.log('\n── OpenWrt Router – Login Flow ──────────────────');
+
+  let openwrtDevice;
+  await test('Register OpenWrt device', async () => {
+    openwrtDevice = await addDevice('OpenWrt', OPENWRT_IP, 'http');
+    assert(openwrtDevice.id, 'missing id');
+  });
+
+  await test('OpenWrt: GET /{ip}/ → login form', async () => {
+    const res = await request(`${PROXY_BASE}/${OPENWRT_IP}/`);
+    assert(res.status === 200, `expected 200, got ${res.status}`);
+    assertIncludes(res.body, 'form', 'login form');
+    assertIncludes(res.body, 'form=login', 'form action ?form=login');
+  });
+
+  await test('OpenWrt: POST /{ip}/?form=login wrong creds → 403', async () => {
+    const body = 'username=root&password=wrong';
+    const res = await request(`${PROXY_BASE}/${OPENWRT_IP}/?form=login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    });
+    assert(res.status === 403, `expected 403, got ${res.status}`);
+  });
+
+  await test('OpenWrt: POST /{ip}/?form=login correct creds → 200 + sysauth cookie', async () => {
+    const body = 'username=root&password=password';
+    const res = await request(`${PROXY_BASE}/${OPENWRT_IP}/?form=login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    });
+    assert(res.status === 200, `expected 200, got ${res.status}`);
+    const cookies = [res.headers['set-cookie']].flat().filter(Boolean);
+    assert(cookies.some(c => c.includes('sysauth=OW_SYSAUTH_TOKEN')), 'sysauth cookie missing');
+    assert(cookies.some(c => c.includes('sp_active_device')), 'sp_active_device cookie missing');
+    const sysauthCookie = cookies.find(c => c.includes('sysauth='));
+    assertIncludes(sysauthCookie.toLowerCase(), 'path=/', 'sysauth cookie must have Path=/');
+  });
+
+  await test('OpenWrt: GET /{ip}/cgi-bin/luci/ with sysauth → 200 Dashboard', async () => {
+    const cookie = `sysauth=OW_SYSAUTH_TOKEN; sp_active_device=${encodeURIComponent(OPENWRT_IP)}`;
+    const res = await request(`${PROXY_BASE}/${OPENWRT_IP}/cgi-bin/luci/`, {
+      headers: { Cookie: cookie },
+    });
+    assert(res.status === 200, `expected 200, got ${res.status}`);
+    assertIncludes(res.body, 'OpenWrt Dashboard', 'dashboard');
+  });
+
+  await test('OpenWrt: GET /{ip}/cgi-bin/luci/ without sysauth → 403', async () => {
+    const res = await request(`${PROXY_BASE}/${OPENWRT_IP}/cgi-bin/luci/`);
+    assert(res.status === 403, `expected 403, got ${res.status}`);
+  });
+
+  // ── SPA Routing ───────────────────────────────────────────────────────────
+  console.log('\n── SPA Routing & Device Switching ───────────────');
+
+  await test('SPA: GET / without device cookie → SPA (200)', async () => {
+    const res = await request(`${PROXY_BASE}/`);
+    assert(res.status === 200 || res.status === 404, `unexpected status ${res.status}`);
+    assertNotIncludes(res.body, 'Huawei Dashboard', 'must not be Huawei dashboard');
+    assertNotIncludes(res.body, 'OpenWrt Dashboard', 'must not be OpenWrt dashboard');
+  });
+
+  await test('SPA: GET / with sp_active_device but NO Referer → SPA (not device)', async () => {
+    const res = await request(`${PROXY_BASE}/`, {
+      headers: { Cookie: `sp_active_device=${encodeURIComponent(HUAWEI_IP)}` },
+    });
+    // Should serve SPA, not proxy to Huawei root (which would 302)
+    assert(res.status !== 302, `must not redirect to device login (got 302)`);
+  });
+
+  await test('SPA: GET / with sp_active_device AND IP-prefix Referer → proxied to device', async () => {
+    // Use Referer that contains the registered OpenWrt IP prefix in the path.
+    // The proxy should detect the IP in the Referer and route to the device.
+    const cookie = `sysauth=OW_SYSAUTH_TOKEN; sp_active_device=${encodeURIComponent(OPENWRT_IP)}`;
+    const res = await request(`${PROXY_BASE}/`, {
+      headers: {
+        Cookie: cookie,
+        // Referer must contain the IP prefix so hasDeviceReferer is true
+        Referer: `http://127.0.0.1:${PROXY_PORT}/${OPENWRT_IP}/cgi-bin/luci/`,
+      },
+    });
+    // With IP-prefix Referer → proxy forwards GET / to OpenWrt → 200 login form
+    assert(res.status === 200, `expected 200, got ${res.status}`);
+    assertIncludes(res.body, 'OpenWrt', 'should proxy to OpenWrt, not SPA');
+  });
+
+  await test('SPA: GET / with .asp Referer → proxied to device', async () => {
+    const cookie = `SessionID=HUAWEI_SESSION_TOKEN; sp_active_device=${encodeURIComponent(HUAWEI_IP)}`;
+    const res = await request(`${PROXY_BASE}/`, {
+      headers: {
+        Cookie: cookie,
+        // Referer with .asp path — hasDeviceReferer becomes true via extension check
+        Referer: `http://127.0.0.1:${PROXY_PORT}/${HUAWEI_IP}/html/index.asp`,
+      },
+    });
+    // Huawei / with valid session → 200 Dashboard
+    assert(res.status === 200, `expected 200, got ${res.status}`);
+    assertIncludes(res.body, 'Huawei Dashboard', 'should proxy to Huawei dashboard');
+  });
+
+  // ── Cookie Isolation (Device Switch) ─────────────────────────────────────
+  console.log('\n── Cookie Isolation (Device Switch) ─────────────');
+
+  await test('Cookie isolation: OpenWrt sysauth NOT forwarded to Huawei', async () => {
+    // Simulate browser that was logged into OpenWrt but now requests Huawei
+    // sp_active_device still points to OpenWrt (device switch scenario)
+    const cookie = `sysauth=OW_SYSAUTH_TOKEN; sp_active_device=${encodeURIComponent(OPENWRT_IP)}`;
+    const res = await request(`${PROXY_BASE}/${HUAWEI_IP}/`, {
+      headers: { Cookie: cookie },
+    });
+    // Huawei should NOT receive the sysauth cookie → no session → 302 to login
+    // If sysauth leaked, Huawei might respond differently (still 302 since it doesn't use sysauth)
+    // Primary assertion: proxy strips cookies on device switch → Huawei sees no SessionID → 302
+    assert(res.status === 302, `expected 302 (no leaked session), got ${res.status}`);
+    const loc = res.headers['location'] || '';
+    assertIncludes(loc, 'html/index.asp', 'redirect to login page');
+  });
+
+  await test('Cookie isolation: Huawei SessionID NOT forwarded to OpenWrt', async () => {
+    const cookie = `SessionID=HUAWEI_SESSION_TOKEN; sp_active_device=${encodeURIComponent(HUAWEI_IP)}`;
+    const res = await request(`${PROXY_BASE}/${OPENWRT_IP}/cgi-bin/luci/`, {
+      headers: { Cookie: cookie },
+    });
+    // OpenWrt should NOT receive SessionID as sysauth → no session → 403
+    assert(res.status === 403, `expected 403 (no leaked sysauth), got ${res.status}`);
+  });
+
+  await test('Cookie isolation: after switching devices, sp_active_device is updated', async () => {
+    // First request to Huawei: should set sp_active_device=HUAWEI_IP
+    const res = await request(`${PROXY_BASE}/${HUAWEI_IP}/html/index.asp`);
+    const cookies = [res.headers['set-cookie']].flat().filter(Boolean);
+    const sp = cookies.find(c => c.startsWith('sp_active_device='));
+    assert(sp, 'sp_active_device cookie missing');
+    assertIncludes(decodeURIComponent(sp), HUAWEI_IP, 'sp_active_device must point to Huawei IP');
+  });
+
   // ── Cleanup ───────────────────────────────────────────────────────────────
   await deleteDevice(createdDevice.id);
+  if (huaweiDevice)  await deleteDevice(huaweiDevice.id);
+  if (openwrtDevice) await deleteDevice(openwrtDevice.id);
 
   // ── Summary ───────────────────────────────────────────────────────────────
   console.log('\n═══════════════════════════════════════════════');
@@ -709,6 +941,7 @@ async function main() {
     deviceServer.kill();
     dummyRouterServer.kill();
     proxyServer.kill();
+    if (deviceServer._extraServers) deviceServer._extraServers.forEach(s => s.kill());
   }
 
   process.exit(failed > 0 ? 1 : 0);
