@@ -260,16 +260,11 @@ function rewriteCookies(setCookie, targetIp, isHostTarget = false) {
         // Strip the device's own Domain so the cookie is scoped to the proxy domain.
         let rc = c.replace(/Domain=[^;]+;?\s*/gi, '');
         
-        if (isHostTarget) {
-            // Dedicated subdomain: safe to use Path=/ for full SPA compatibility
-            rc = rc.replace(/Path=[^;]+(;?\s*)/gi, 'Path=/; ');
-            if (!/Path=/i.test(rc)) rc += '; Path=/';
-        } else {
-            // IP prefix routing: MUST scope to /targetIp to prevent cookie collisions
-            // between multiple devices on the same proxy domain.
-            rc = rc.replace(/Path=[^;]+(;?\s*)/gi, `Path=/${targetIp}; `);
-            if (!/Path=/i.test(rc)) rc += `; Path=/${targetIp}`;
-        }
+        // Reset Path to / — the cookie must be sent with ALL requests to the proxy,
+        // because leaked relative URLs from the router will lack the IP prefix.
+        // If we scope it to /targetIp, the browser will drop the cookie on leaked URLs.
+        rc = rc.replace(/Path=[^;]+(;?\s*)/gi, 'Path=/; ');
+        if (!/Path=/i.test(rc)) rc += '; Path=/';
         
         return rc.trim();
     });

@@ -398,16 +398,8 @@ function proxyRouter(req, res, next) {
     if (targetDevice) {
         req.spTarget = targetDevice;
         if (urlPrefix && !req.url.startsWith(urlPrefix)) {
-            if (!req.isHostTarget) {
-                // For non-host targets, redirect the browser to include the IP prefix.
-                // This ensures that path-scoped cookies (like OpenWrt sysauth) are sent
-                // correctly by the browser, and relative links on the resulting page work.
-                // Exception: WebSockets don't follow redirects reliably, so silently rewrite those.
-                const isWs = req.headers.upgrade && req.headers.upgrade.toLowerCase() === 'websocket';
-                if (!isWs) {
-                    return res.redirect(307, `${urlPrefix}${req.url}`);
-                }
-            }
+            // Silently rewrite the URL to include the IP prefix for internal proxying.
+            // Using 307 redirects here causes CORS errors in browsers for XHR POST requests.
             req.url = `${urlPrefix}${req.url}`;
         }
 
