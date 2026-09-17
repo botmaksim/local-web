@@ -268,7 +268,7 @@ const proxy = createProxyMiddleware({
                 require('./cookie-tracker').trackCookies(targetIp, headers['set-cookie']);
             }
             const deviceCookies = headers['set-cookie']
-                ? rewriteCookies(headers['set-cookie'], targetIp)
+                ? rewriteCookies(headers['set-cookie'], targetIp, isHostTarget)
                 : [];
             const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
             const secureFlag = isHttps ? '; Secure' : '';
@@ -354,6 +354,9 @@ function proxyRouter(req, res, next) {
 
     const devices      = getDevices();
     const firstSegment = req.path.split('/').filter(Boolean)[0] || '';
+    
+    let targetDevice = null;
+    let urlPrefix = '';
 
     // ── Case 1: explicit /{ip}/… URL ────────────────────────────────────────
     if (isValidIp(firstSegment)) {
@@ -361,11 +364,44 @@ function proxyRouter(req, res, next) {
         if (!device) {
             return res.status(403).json({ error: 'Forbidden: device not registered' });
         }
+        targetDevice = device;
+    } else {
+        // ── Case 2: no IP prefix — check Referer / cookie via resolveDevice ──────
+        const device = resolveDevice(req, devices);
+        if (device) {
+            // Let the SPA handle the root dashboard and its own static files.
+            if (req.method === 'GET') {
+                let hasDeviceReferer = false;
+                if (req.headers.referer) {
+                    const refUrl = new URL(req.headers.referer, 'http://localhost');
+                    hasDeviceReferer = req.headers.referer.includes(`/${device.ip}`) ||
+                                       matchDeviceByHost(refUrl.host, devices) ||
+                                       /\.(asp|cgi|php|xml|json)($|\?)/i.test(refUrl.pathname) ||
+                                       /^\/(html|cgi-bin|webserver|api)\//i.test(refUrl.pathname);
+                }
 
-        req.spTarget = device;
+                if (req.path === '/' && !hasDeviceReferer && !req.isHostTarget) {
+                    return next();
+                }
+
+                const staticPath = path.join(FRONTEND_DIST, req.path);
+                if (!req.isHostTarget && fs.existsSync(staticPath) && req.path !== '/') {
+                    return next();
+                }
+            }
+
+            targetDevice = device;
+            urlPrefix = `/${device.ip}`;
+        }
+    }
+
+    if (targetDevice) {
+        req.spTarget = targetDevice;
+        if (urlPrefix && !req.url.startsWith(urlPrefix)) {
+            req.url = `${urlPrefix}${req.url}`;
+        }
 
         // Parse the body for requests that may carry proxy URLs in them
-        // (e.g. Home Assistant OAuth login_flow / token exchange).
         const ct = (req.headers['content-type'] || '').toLowerCase();
         const needsBodyParse =
             ct.includes('application/json') ||
@@ -386,38 +422,12 @@ function proxyRouter(req, res, next) {
             }
 
             return parser(req, res, () => {
-                const bodyBuf = rewriteBody(req, device, ct);
+                const bodyBuf = rewriteBody(req, targetDevice, ct);
                 patchReqStream(req, bodyBuf);
                 return proxy(req, res, next);
             });
         }
 
-        return proxy(req, res, next);
-    }
-
-    // ── Case 2: no IP prefix — check Referer / cookie via resolveDevice ──────
-    const device = resolveDevice(req, devices);
-    if (device) {
-        // Let the SPA handle the root dashboard and its own static files.
-        if (req.method === 'GET') {
-            const hasDeviceReferer = req.headers.referer && (
-                req.headers.referer.includes(`/${device.ip}`) ||
-                matchDeviceByHost(new URL(req.headers.referer, 'http://localhost').host, devices)
-            );
-
-            if (req.path === '/' && !hasDeviceReferer && !req.isHostTarget) {
-                return next();
-            }
-
-            const staticPath = path.join(FRONTEND_DIST, req.path);
-            if (!req.isHostTarget && fs.existsSync(staticPath) && req.path !== '/') {
-                return next();
-            }
-        }
-
-        // Route to the device: prepend /{ip} so pathRewrite can strip it.
-        req.spTarget = device;
-        req.url = `/${device.ip}${req.url}`;
         return proxy(req, res, next);
     }
 

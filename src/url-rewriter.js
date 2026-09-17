@@ -118,8 +118,13 @@ function replaceAbsoluteUrls(text, targetIp, req) {
     if (!req.isHostTarget) {
         // 5. Inline JS root redirects: location.href = "/" → location.href = "/{ip}/"
         out = out.replace(
-            /(location\.href|location\.replace|location\.assign|window\.location|top\.location\.href|top\.location|parent\.location|window\.top\.location)\s*(=|\()\s*(['"])\/(["'])/g,
+            /(location\.href|location\.pathname|location\.replace|location\.assign|window\.location|document\.location|document\.location\.href|top\.location\.href|top\.location|parent\.location|window\.top\.location)\s*(=|\()\s*(['"])\/(["'])/g,
             `$1$2$3/${targetIp}/$4`
+        );
+        // 6. Meta refresh to root: <meta http-equiv="refresh" content="0; url=/">
+        out = out.replace(
+            /(<meta\s+[^>]*http-equiv\s*=\s*['"]?refresh['"]?[^>]*content\s*=\s*['"]?\d+\s*;\s*url\s*=\s*['"]?)\/([^'"]*['"]?\s*\/?>)/gi,
+            `$1/${targetIp}/$2`
         );
     }
 
@@ -249,16 +254,23 @@ function rewriteLocationHeader(loc, targetIp, targetProto, proxyBase, isHostTarg
  * @param {string}          targetIp
  * @returns {string[]}
  */
-function rewriteCookies(setCookie, targetIp) {
+function rewriteCookies(setCookie, targetIp, isHostTarget = false) {
     const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
     return cookies.map(c => {
         // Strip the device's own Domain so the cookie is scoped to the proxy domain.
         let rc = c.replace(/Domain=[^;]+;?\s*/gi, '');
-        // Reset Path to / — the cookie must be sent with ALL requests to the proxy,
-        // not just those under /{ip}/. (HA auth tokens, for example, are sent to
-        // /auth/token which in our proxy becomes /{ip}/auth/token.)
-        rc = rc.replace(/Path=[^;]+(;?\s*)/gi, 'Path=/; ');
-        if (!/Path=/i.test(rc)) rc += '; Path=/';
+        
+        if (isHostTarget) {
+            // Dedicated subdomain: safe to use Path=/ for full SPA compatibility
+            rc = rc.replace(/Path=[^;]+(;?\s*)/gi, 'Path=/; ');
+            if (!/Path=/i.test(rc)) rc += '; Path=/';
+        } else {
+            // IP prefix routing: MUST scope to /targetIp to prevent cookie collisions
+            // between multiple devices on the same proxy domain.
+            rc = rc.replace(/Path=[^;]+(;?\s*)/gi, `Path=/${targetIp}; `);
+            if (!/Path=/i.test(rc)) rc += `; Path=/${targetIp}`;
+        }
+        
         return rc.trim();
     });
 }
